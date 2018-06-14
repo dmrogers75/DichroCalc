@@ -1,0 +1,35 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    splitchains
+#
+# Function:   Splits a PDB into single chains
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3879 $, $Date: 2009-02-11 18:30:18 +0000 (Wed, 11 Feb 2009) $
+#
+# Date:       November 2006
+#
+####################################################################################################
+
+use strict;                         # always use this!!!
+use lib "$ENV{HOME}/bin/perllib";   # add ~/bin/perllib to the library path
+use ParsePDB;                       # to parse PDB files
+
+my ($PDB, $File);
+
+if (scalar @ARGV == 0) {
+	print STDERR "\n";
+	print STDERR "Usage:   splitchains file.pdb\n";
+	print STDERR "\n";
+	exit 1;
+}
+
+foreach $File ( @ARGV ) {
+	$PDB = ParsePDB->new (FileName => $File, NoHETATM => 1, NoANISIG => 1);
+	
+	$PDB->WriteChains (Model => 0, Header => 0, Footer => 0);
+}
+

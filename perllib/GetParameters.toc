@@ -1,0 +1,11 @@
+\contentsline {section}{\numberline {1}Introduction}{2}
+\contentsline {section}{\numberline {2}Implementation}{3}
+\contentsline {section}{\numberline {3}Usage Example}{4}
+\contentsline {section}{\numberline {4}Parameter Types}{5}
+\contentsline {subsection}{\numberline {4.1}Switches}{5}
+\contentsline {subsection}{\numberline {4.2}Integers and Real Numbers}{5}
+\contentsline {subsection}{\numberline {4.3}Files}{5}
+\contentsline {section}{\numberline {5}The \texttt {\$Options->\{rest\}} Hash}{6}
+\contentsline {section}{\numberline {6}Define Mandatory Parameters}{7}
+\contentsline {section}{\numberline {7}Define the Minimum/Maximum Size of a List}{7}
+\contentsline {section}{\numberline {8}Differentiate Between Given Parameters and Default Values}{8}

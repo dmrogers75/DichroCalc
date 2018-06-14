@@ -1,0 +1,30 @@
+#!/bin/bash
+
+####################################################################################################
+#
+# Program:    doall
+#
+# Function:   Executes a command for all files with a certain extension in the folder
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 2945 $, $Date: 2008-04-28 17:13:10 +0100 (Mon, 28 Apr 2008) $
+#
+# Date:       May 2006
+#
+####################################################################################################
+
+
+if [ $# -lt 1 ] ; then
+	echo "doall extension command param1 param2 ..."
+	echo
+	exit 1
+fi
+
+Ext=$1
+shift
+
+for File in *.$Ext
+do
+	$* $File
+done

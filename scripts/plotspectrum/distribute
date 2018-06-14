@@ -1,0 +1,25 @@
+#!/bin/bash
+
+cd ~/bin/scripts/plotspectrum
+
+if [ ! -d distribution ]; then
+	mkdir  distribution
+fi 
+
+if [ -d distribution/plotspectrum ]; then
+	rm -rf distribution/plotspectrum
+fi
+
+mkdir  distribution/plotspectrum
+
+cp plotspectrum                   distribution/plotspectrum
+cp plotspectrum.pdf               distribution/plotspectrum
+cp COPYING                        distribution/plotspectrum
+cp ~/bin/perllib/GetParameters.pm distribution/plotspectrum
+cp ~/bin/perllib/DebugPrint.pm    distribution/plotspectrum
+cp ~/bin/perllib/ReadSpectrum.pm  distribution/plotspectrum
+cp ~/bin/perllib/GetBaseName.pm   distribution/plotspectrum
+
+cd distribution
+tar cvzf plotspectrum.tar.gz plotspectrum
+

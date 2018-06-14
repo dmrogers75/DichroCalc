@@ -1,0 +1,72 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    centreofmass
+#
+# Function:   Reads in a blank/tab-separated list of coordinates and weighting factors (mass) and
+#             calculates the dipole moment
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3857 $, $Date: 2009-02-11 16:23:56 +0000 (Wed, 11 Feb 2009) $
+#
+# Date:       July 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+
+my ($Line, @Fields, @Atoms, $Atom, $Distance, $MassCentre, $InFile);
+
+if (not @ARGV) {
+	print "\nUsage:   centreofmass infile\n\n";
+	exit 1;
+}
+
+$InFile = shift;
+
+# open the file or die if somthing went wrong
+open FILE, "<$InFile" or die "File $InFile could not be opened: $!";
+
+while (<FILE>) {                       # foreach line in the file
+	$Line = $_;                         # read the current line
+	$Line =~ s/^\s+//;                  # remove leading blanks
+	@Fields = split /[\t\s]+/, $Line;  # split up the columns into an array
+
+	# add the current monopole to the array of monopoles
+	push @Atoms, {x => $Fields[0], y => $Fields[1], z => $Fields[2], w => $Fields[3]};
+}
+
+close FILE;
+
+# create an anonymous hash and initalize the values
+$MassCentre = {x => 0, y => 0, z => 0, w => 0};
+
+foreach $Atom ( @Atoms ) {
+	$Atom->{x} = $Atom->{x} * $Atom->{w};
+	$Atom->{y} = $Atom->{y} * $Atom->{w};
+	$Atom->{z} = $Atom->{z} * $Atom->{w};
+
+	# add up all coordinates and weighting factors
+	$MassCentre->{x} = $MassCentre->{x} + $Atom->{x};
+	$MassCentre->{y} = $MassCentre->{y} + $Atom->{y};
+	$MassCentre->{z} = $MassCentre->{z} + $Atom->{z};
+	$MassCentre->{w} = $MassCentre->{w} + $Atom->{w};
+}
+
+foreach ( qw/x y z/) {
+	# divide each coordinate by the charge (negative or positive respectively)
+	$MassCentre->{$_} = $MassCentre->{$_} / $MassCentre->{w};
+}
+
+print "\nCentre of Mass:\n\n";
+
+printf "%8.3f   %8.3f   %8.3f   %8.3f\n", $MassCentre->{x}, $MassCentre->{y}, $MassCentre->{z}, $MassCentre->{w};
+print "\n";
+

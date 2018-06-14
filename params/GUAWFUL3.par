@@ -1,0 +1,35 @@
+  -GUAWFUL3-
+# guanine with water, only two transitions, one close to 290 nm and the the one with lowest energy around 260nm
+# constant moment length of 1 Angstroms
+11
+        -2.282          0.507         -0.005          1.00   # N1
+        -2.190         -0.842         -0.015          1.00   # C2
+        -3.353         -1.511         -0.045          1.00   # N2
+        -1.064         -1.482         -0.025          1.00   # N3
+         0.001         -0.673         -0.005          1.00   # C4
+         0.001          0.686          0.005          1.00   # C5
+        -1.221          1.380          0.025          1.00   # C6
+        -1.409          2.589          0.045          1.00   # O6
+         1.310          1.072          0.025          1.00   # N7
+         2.074         -0.023          0.005          1.00   # C8
+         1.296         -1.102         -0.025          1.00   # N9
+&TRANSITION 1->... # GUAWFUL3
+   2   38150.0800       # 262.12 nm            # Transition moment 2.93, angle -4.00 to y axis
+       0.0698      0.9976      0.0000   1.000  # Electr. mom., scale fac.
+       0.0000      0.0000      0.0000          # Magnet. mom.
+       0.00000000      0.00000000      0.00000000     -2.92991200
+       0.06975647      0.99756405      0.00000000      2.92991200
+   2   53152.0200       # 188.14 nm            # Transition moment 2.71, angle -42.00 to y axis
+       0.6691      0.7431      0.0000   1.000  # Electr. mom., scale fac.
+       0.0000      0.0000      0.0000          # Magnet. mom.
+       0.00000000      0.00000000      0.00000000     -2.70587419
+       0.66913061      0.74314483      0.00000000      2.70587419
+&TRANSITION 2->... # GUAWFUL3
+   0     00000.0000     #
+         0.0000         0.0000         0.0000  1.000  # electr. mom., scale fac..
+         0.0000         0.0000         0.0000         # magnet. mom.
+&PERMANENT MOMENTS # GUAWFUL3
+   0     00000.0000     #
+         0.0000         0.0000         0.0000  1.000  # electr. mom., scale fac..
+   0     00000.0000     #
+         0.0000         0.0000         0.0000  1.000  # electr. mom., scale fac..

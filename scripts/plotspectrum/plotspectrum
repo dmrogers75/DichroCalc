@@ -1,0 +1,1866 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Package:         plotspectrum
+#
+# Function:        Plot one or more spectra with gnuplot into a postscript file. The script acts as
+#                  a frontend for gnuplot and many gnuplot options can be configured by command
+#                  line parameters, thus making gnuplot scriptable. The command file for gnuplot
+#                  can be requested as well to fine tune it afterwards.
+#                  The script comes with an extensive manual (10+ pages) and it is very recommended
+#                  to have a look into it.
+#
+# Author:          Benjamin Bulheller
+#
+# Website:         www.bulheller.com
+#
+# Mail address:    webmaster.-at-.bulheller.com
+#
+# Version:         $Revision: 4548 $, $Date: 2009-06-06 08:51:27 +0200 (Sat, 06 Jun 2009) $
+#
+# Licence:         This program is free software: you can redistribute it and/or modify
+#                  it under the terms of the GNU General Public License as published by
+#                  the Free Software Foundation, either version 3 of the License, or
+#                  (at your option) any later version.
+#
+#                  This program is distributed in the hope that it will be useful,
+#                  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#                  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#                  GNU General Public License for more details.
+#
+#                  You should have received a copy of the GNU General Public License
+#                  along with this program.  If not, see http://www.gnu.org/licenses/.
+#
+####################################################################################################
+
+use strict;                         # always use this!!!
+use FindBin qw/$Bin/;               # sets $Bin to the directory of the script
+use lib $Bin;                       # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib";   # add ~/bin/perllib to the library path
+use GetParameters;                  # to parse the command line parameters
+use ReadSpectrum;                   # to read in xy data
+use Data::Dumper;                   # for easy printout of arrays and hashes
+use GetBaseName;                    # to split a filename into base name and extension
+use DebugPrint;                     # handy during debugging
+
+
+####################################################################################################
+# Configuration Variables
+####################################################################################################
+
+my $LABELFORMAT   = "font \"Helvetica, 22\"";
+my $AXISFONT      = "\"Helvetica\" 16";
+
+# some defaults used only for CD/LD spectra
+my $XMIN          = 150;
+my $XMAX          = 250;
+# my $XTICS         = 10;
+my $MXTICS        = 2;
+my $MYTICS        = 2;
+my $LINEWIDTH     = 4;
+my $XLABEL        = "\"wavelength {/Symbol l} / nm\"";
+my $XLABELWN      = "\"wavenumbers / cm^{-1}\"";
+my $YLABELELL     = "\"[{/Symbol q}] / deg cm^2 dmol^{-1}\"";
+my $YLABELCDAB    = "\"CD / mol^{-1} dm^3 cm^{-1}\"";
+my $YLABELAB      = "\"absorbance / mol^{-1} dm^3 cm^{-1}\"";
+my $YLABELLD      = "\"LD / mol^{-1} dm^3 cm^{-1}\"";
+my $YLABELLDR     = "\"LD_{red} / mol^{-1} dm^3 cm^{-1}\"";
+my $YLABELDR      = "\"Dichroic Ratio / mol^{-1} dm^3 cm^{-1}\"";
+my $SAMPLEN       = 2;
+my $KSPACING      = 1.25;
+my $POINTDIST     = 5;
+
+
+####################################################################################################
+# Configuration of the parameters
+####################################################################################################
+
+my $Parameters = {
+	x           => "reallist[1,2]",
+	y           => "reallist[1,2]",
+	z           => "reallist[1,2]",
+	
+	ls          => "list", # these can't be defined as "integerlist" because
+	lt          => "list", # a default value can be defined with an asterisk
+	lw          => "list", # like e.g. "-lw 4*" and GetParameters would not
+	pt          => "list", # accept 4* as an integer
+	lc          => "list",
+	
+	k           => "list",
+	every       => "real",
+	ktop        => "switch",
+	kbottom     => "switch",
+	kinside     => "switch",
+	koutside    => "switch",
+	kbelow      => "switch",
+	kleft       => "switch",
+	kright      => "switch",
+	kLeft       => "switch",
+	kRight      => "switch",
+	kreverse    => "switch",
+	knoreverse  => "switch",
+	ksamplen    => "real",
+	kspacing    => "real",
+	
+	xtics       => "real",
+	ytics       => "real",
+	ztics       => "real",
+	mxtics      => "real",
+	mytics      => "real",
+	mztics      => "real",
+	o           => "string",
+	xlabel      => "string",
+	ylabel      => "string",
+	zlabel      => "string",
+	pd          => "string",
+	s           => "string",
+	
+	t           => "string",
+	notitle     => "switch",
+	w           => "switch",
+	wn          => "switch",
+	a           => "switch",
+	e           => "switch",
+	ld          => "switch",
+	dr          => "switch",
+	ldr         => "switch",
+   view        => "string",
+	
+	using       => "stringlist",
+	lines       => "switch",
+	impulses    => "switch",
+	points      => "switch",
+	dots        => "switch",
+	pm3d        => "switch",
+	solid       => "switch",
+	splot       => "switch",
+	
+	unique      => "switch",
+	csplines    => "switch",
+	acsplines   => "switch",
+	bezier      => "switch",
+	sbezier     => "switch",
+	
+	contour     => "integer",
+	cbase       => "switch",
+	csurface    => "switch",
+	cboth       => "switch",
+	grid        => "integer",
+	
+	nokey       => "switch",
+	nocolor     => "switch",
+	nocolour    => "switch",
+	cmd         => "switch",
+	cfg         => "switch",
+	p           => "switch",
+	gif         => "switch",
+	res         => "string",
+	pdf         => "switch",
+	
+	d           => "integer",
+	dl1         => "real",
+	dl2         => "real",
+};
+
+# specify default values for some of the options
+my $Options = {
+	nocolor     => 0,
+	nocolour    => 0,
+	nokey       => 0,
+	every       => 1,
+	s           => "1,1",
+	res         => "1024,768",
+	lw          => [$LINEWIDTH],
+	pd          => $POINTDIST,
+	ksamplen    => $SAMPLEN,
+	kspacing    => $KSPACING,
+};
+
+my $Help = "\n" .
+"Usage:   plotspectrum file1 [...]  [-x min max]        [-y min max]\n" .
+"                                   [-o outputfile]     [-p]\n" .
+"                                   [-lw linewidth]     [-title \"title\"]\n" .
+"                                   [-xlabel \"label\"]   [-ylabel \"label\"]\n" .
+"                                   [-ls 1 2 3 ...]     [-using 1:2 1:3 5:6]\n" .
+"                                   [-every 10] [-k \"key1\" \"key2\" ... ]\n" .
+"\n" .
+"    file1       the extension .cd or .ld is added if omitted\n" .
+"\n" .
+"    -a          use absorbance  units for y-axis (default is ellipticity for .cdl\n" .
+"                and .cd files)\n" .
+"    -e          use ellipticity units for y-axis (default)\n" .
+"    -ld         LD (absorbance units) for the y-axis, default for .ld\n" .
+"    -dr         dichroic ratio (absorbance units) for the y-axis, default for .dr\n" .
+"    -ldr        reduced LD (absorbance units) for the y-axis, default for .ldr\n" .
+"\n" .
+"    -w          use wavelengths (nm) for x-axis, default for all dichroism spectra\n" .
+"    -wn         use wavenumbers for the x-axis\n" .
+"    -xlabel     specify a label for the x-axis\n" .
+"    -ylabel     specify a label for the y-axis\n" .
+"    -zlabel     specify a label for the z-axis\n" .
+"\n" .
+"    -x          x-range, e.g. 150 250, default is $XMIN $XMAX for spectra\n" .
+"    -xtics      the distance of the tics on the x-axis\n" .
+"    -mxtics     defines the minor tics on the x-axis\n" .
+"    -noxtics    disable tics of the x-axis\n" .
+"\n" .
+"    -y          the y-range, e.g. -1000 1000 or 1000\n" .
+"    -ytics      the distance of the tics on the y-axis\n" .
+"    -mytics     defined the minor tics on the y-axis\n" .
+"    -noytics    disable tics of the y-axis\n" .
+"\n" .
+"    -z          the z-range, e.g. -1000 1000 or 1000\n" .
+"    -ztics      the distance of the tics on the z-axis\n" .
+"    -mztics     defined the minor tics on the z-axis\n" .
+"    -noztics    disable tics of the z-axis\n" .
+"\n" .
+"    -cmd        keep the gnuplot command file for later changes\n" .
+"    -cfg        create a .cfg file with the command used to produce the spectrum\n" .
+"    -pdf        create a PDF from the postscript\n" .
+"    -gif        create a GIF file instead of postscript (automatically, if .gif\n" .
+"                extension is given with -o\n" .
+"    -res        defines the GIF resolution xres yres (default 1024x768)\n" .
+"\n" .
+"    -o          defines the file name of the output file\n" .
+"    -p          preview mode: open gnuplot instead of writing to a file\n" .
+"    -s          define the size of the plot (default is $Options->{s})\n" .
+"\n" .
+"    -view x,y   defines the view (rotation around x, rotation around y)\n" .
+"\n" .
+"    -t          specify a title for the plot\n" .
+"    -notitle    specifically disable the title\n" .
+"    -lines      plot a line spectrum instead of a curve (used automatically for\n" .
+"                .cdl and .abl)\n" .
+"    -impulses   same as \"-lines\"\n" .
+"    -points     use points for plotting\n" .
+"    -dots       use dots for plotting\n" .
+"    -pm3d       use PM3D (this requires grid data, see -grid)\n" .
+"\n" .
+"    -contour x  enables the plot of the contours (grid data required) and x defines\n" .
+"                the number of intervalls into which the z-range is divided into\n" .
+"    -cbase      plot the contours at the base\n" .
+"    -csurface   plot the contours on the surface\n" .
+"    -cboth      plot the contours on both the base and the surface\n" .
+"    -grid x     create grid data using column x (counting starts at 1)\n" .
+"\n" .
+"    -nocolour   do not use colours (terminal-depended, X11 will still be coloured)\n" .
+"    -solid      use only solid lines (terminal-depended)\n" .
+"\n" .
+"    -ls         A list of numbers from 1 to 15, which define the line styles. The\n" .
+"                first style is assigned to the first spectrum etc. A style marked\n" .
+"                with an asterisk (-ls 2*) is assigned to all other graphs.\n" .
+"                If the style contains points, \"linespoints\" are used.\n" .
+"    -lt         A list of numbers from 1 to 10, which define the line types\n" .
+"                (1=solid, 2=dashed, etc.). The first number is assigned to ls 1,\n" .
+"                second to ls 2, etc. An asterisk marks a default type.\n" .
+"                See the manual for an example.\n" .
+"    -lc         A list of strings defining the line colour sequence in which they\n" .
+"                are to be assigned to the line styles. (Asterisk for default.)\n" .
+"    -pt         A list of integers with the point types assigned to the line styles.\n" .
+"                Use 0 for no point style. An asterisk marks a default style.\n" .
+"    -lw         A list of integers defining the line widths of the line styles\n" .
+"                (default $Options->{lw}[0]). An asterisk marks a default width.\n" .
+"\n" .
+"    -every      print only every nth data point of all graphs\n" . 
+"    -pd         point distance, default is $Options->{pd}, detects too many data points\n" .
+"                per x-value automatically if linespoints are used and sets \"every\"\n" .
+"                to the given value for that graph\n" .
+"    -using      Defines which columns are to be plotted in a multi-column input\n" .
+"                file. More than one value can be given for multiple files and\n" .
+"                the syntax follows the gnuplot format, e.g. \'-using 1:2 1:3 1:4\'\n" .
+"                An asterisk marks the default to be taken for all plots, e.g.\n" .
+"                -using 1:2* 1:3 1:5\n" .
+"\n" .
+"    -splot      uses splot instead of plot (to create 3D plots)\n" .
+"\n" .
+"    -bezier     use bezier curves to connect the points smoothly\n" .
+"    -sbezier    use sbezier curves to connect the points smoothly\n" .
+"    -unique     use the \'unique\' fitting routine to smooth curves\n" .
+"    -csplines   use splines to connect the points smoothly\n" .
+"    -acsplines  use weighted splines to connect the points smoothly\n" .
+"                (third column with weighting factors needed)\n" .
+"\n" .
+"    -nokey      do not display the key (legend)\n" .
+"    -k          keys for each graph used in the legend (order matters!)\n" .
+"    -ktop       place key at the top\n" .
+"    -kbottom    place key at the bottom\n" .
+"    -kbelow     place key below the plot\n" .
+"    -kinside    place key inside the plot\n" .
+"    -koutside   place key outside the plot\n" .
+"    -kreverse   place line sample to the left of the keys (default)\n" .
+"    -knoreverse place line sample to the right of the keys\n" .
+"    -kleft      place key left\n" .
+"    -kright     place key right\n" .
+"    -kLeft      justify key labels left\n" .
+"    -kRight     justify key labels right\n" .
+"    -ksamplen   define the length of the samples in the key (default $Options->{ksamplen})\n" .
+"    -kspacing   define the spacing of the samples in the key (default $Options->{kspacing})\n" .
+"\n" .
+"    -d          an integer, adjusts the /Dashlength value in the PS file\n" .
+"    -dl1        a real number, adjusts the /dl1 value in the PS file\n" .
+"                (this is the actual length of the dashes)\n" .
+"    -dl2        a real number, adjusts the /dl2 value in the PS file\n" .
+"                (this is the distance between the dashes)\n" .
+"\n";
+
+
+####################################################################################################
+
+my ($i, $File, $OutFile, $BaseName, @Spectrum, @Extrema, $AbsoluteMaximum, $xrange, $TicScale);
+my ($yMin, $yMax, $zMin, $zMax, $x, $y, $z);
+
+my @Arguments = @ARGV; # save the command line in case -cfg was given
+
+GetParameters ($Parameters, $Options, $Help);
+
+# the old hash $Parameters is not needed anymore, after it was parsed by GetParameters
+$Parameters = {};
+
+# check whether files have been given as parameter (without a leading option)
+if (not defined $Options->{rest}) {
+	print STDERR "\nERROR: no files to plot have been specified!\n\n";
+	exit 1;
+}
+else {
+	$Parameters->{AllFiles} = $Options->{rest};
+}
+
+$Parameters->{AxisFont}    = $AXISFONT;
+$Parameters->{LabelFormat} = $LABELFORMAT;
+
+$Parameters->{size}        = $Options->{s};
+$Parameters->{LineWidth}   = $Options->{lw};
+$Parameters->{NoKey}       = $Options->{nokey};
+$Parameters->{pd}          = $Options->{pd};
+$Parameters->{gif}         = $Options->{gif};
+$Parameters->{res}         = $Options->{res};
+$Parameters->{splot}       = $Options->{splot};
+
+if (defined $Options->{t})       { $Parameters->{title} = $Options->{t}   }
+if (defined $Options->{notitle}) { $Parameters->{title} = ""              }
+
+if (defined $Options->{k})     { $Parameters->{Keys}  = $Options->{k}     }
+if (defined $Options->{ls})    { $Parameters->{ls}    = $Options->{ls}    }
+if (defined $Options->{every}) { $Parameters->{every} = $Options->{every} }
+
+# Set the global GraphType to what the user has selected or to "lines" by
+# default. For line spectra (.abl, .cdl) this is later overridden.
+if    (defined $Options->{lines} or defined $Options->{impulses}) {
+	$Parameters->{GraphType} = "impulses";
+}
+elsif (defined $Options->{points}) { $Parameters->{GraphType} = "points"   }
+elsif (defined $Options->{dots}  ) { $Parameters->{GraphType} = "dots"     }
+elsif (defined $Options->{pm3d}  ) { $Parameters->{GraphType} = "pm3d"     }
+                              else { $Parameters->{GraphType} = "lines"    }
+
+# take British and American spelling into account
+if ($Options->{nocolour} or $Options->{nocolor}) { $Parameters->{Colour} = ""       }
+                                           else  { $Parameters->{Colour} = "colour" }
+
+if ($Options->{solid})   { $Parameters->{SolidLines} = "solid" }
+                    else { $Parameters->{SolidLines} = ""      }
+
+
+####################################################################################################
+# Check whether all files exist
+####################################################################################################
+
+# define values for the global minimum and maximum x value which are definitely going to be
+# replaced with the real values
+my ($xMinGlobal, $xMaxGlobal) = (1E20, -1E20);
+my ($yMinGlobal, $yMaxGlobal) = (1E20, -1E20);
+my ($zMinGlobal, $zMaxGlobal) = (1E20, -1E20);
+my $Count = 0;
+
+# If -using was given, look through the list to see whether one was marked with an asterisk
+# to set it as default. This default setting will then be applied to all graphs for which no
+# specific setting is defined.
+if (defined $Options->{using}) {
+	foreach ( @{$Options->{using}} ) {
+		if ($_ =~ m/\*/) {
+			if ($Parameters->{DefaultUsing}) { # see whether a default was defined before (2 marked definitions)
+				print STDERR "\nERROR: Only one \'using definition\' can be set to be default.\n\n";
+				exit 42;
+			}
+			
+			$Parameters->{DefaultUsing} = $_;
+			$Parameters->{DefaultUsing} =~ s/\*//g;
+			$_ =~ s/\*//g;
+		}
+	}
+}
+
+foreach $File ( @{$Parameters->{AllFiles}} ) {
+	if ($File =~ m/\.ps$/) {
+		print STDERR "\nERROR: $File is a postscript file.\n\n";
+		exit 2;
+	}
+	
+	# check for existence of each file
+	if (not -f $File) {
+		# if it has not been found, check for the extension .cd
+		if (-f "$File.cd") {
+			# if a .cd file is found, also look for the .ld file with the same base name
+			if (-f "$File.ld") { push @{$Parameters->{AllFiles}}, "$File.ld" }
+			$File = $File . ".cd";
+		}
+		elsif (-f "$File.ld") {
+			$File = $File . ".ld";
+		}
+		else {
+			print STDERR "\nERROR: file $File not found!\n\n";
+			exit 3;
+		}
+	}
+	
+	# resolve all -using definitions, that is check whether for this particular file a definition
+	# is given, a default setting was defined or if the default (columns 0 and 1) is to be taken
+	if ($Options->{using}[$Count]) {
+		# if especially for this graph columns to plot are given, determine the x and y column
+		#    everything till the colon
+		$x = substr $Options->{using}[$Count], 0, index ($Options->{using}[$Count], ":");
+		--$x;  # gnuplot starts counting at 1, Perl at 0
+		
+		#    everything after the first colon
+		$y = substr $Options->{using}[$Count], index ($Options->{using}[$Count], ":") + 1;
+		
+		if ($y =~ m/:/) { # if a colon is contained, three columns were given
+			#    everything after the colon
+			$z = substr $y, index ($y, ":") + 1;
+			--$z;  # gnuplot starts counting at 1, Perl at 0
+			
+			#    everything till the colon
+			$y = substr $y, 0, index ($y, ":");
+		}
+		
+		--$y;  # gnuplot starts counting at 1, Perl at 0
+		
+		# add the original definition for later use in the plot command
+		push @{$Parameters->{using}}, $Options->{using}[$Count];
+	}
+	elsif ($Parameters->{DefaultUsing}) {
+		#    everything till the colon
+		$x = substr $Parameters->{DefaultUsing}, 0, index ($Parameters->{DefaultUsing}, ":");
+		--$x;  # gnuplot starts counting at 1, Perl at 0
+		
+		#    everything after the colon
+		$y = substr $Parameters->{DefaultUsing}, index ($Parameters->{DefaultUsing}, ":") + 1;
+		
+		if ($y =~ m/:/) { # if a colon is contained, three columns were given
+			#    everything after the colon
+			$z = substr $y, index ($y, ":") + 1;
+			--$z;  # gnuplot starts counting at 1, Perl at 0
+			
+			#    everything till the colon
+			$y = substr $y, 0, index ($y, ":");
+		}
+		
+		--$y;  # gnuplot starts counting at 1, Perl at 0
+		
+		push @{$Parameters->{using}}, $Parameters->{DefaultUsing};
+	}
+	else { # if no using definition is given, use the first and second and third columns
+		$x = 0;
+		$y = 1;
+		$z = 2;
+	}
+	
+	# set some defaults only for CD and LD spectra/linespectra
+	if ($File =~ m/\.(cdl|cd|abl|ab|ld|dr|ldr)$/) {
+		$Options->{CDLD} = 1; # used when the labels are defined
+		
+		# the following two options are taken as they are in the command file
+		if ($Options->{mxtics} ) { $Parameters->{mxtics} = $Options->{mxtics} }
+		                    else { $Parameters->{mxtics} = $MXTICS            }
+		if ($Options->{mytics} ) { $Parameters->{mytics} = $Options->{mytics} }
+		                    else { $Parameters->{mytics} = $MYTICS            }
+	}
+	
+	@Spectrum = ReadSpectrum ($File);
+	my $Value;
+	
+	if (not $Options->{x}) {
+		# if no xrange was defined by the user, each spectrum is read and the globally smallest
+		# and greatest wavelength determined.
+		foreach $Value ( 0 .. $#Spectrum ) {
+			if ($Spectrum[$Value]->[$x] < $xMinGlobal) { $xMinGlobal = $Spectrum[$Value]->[$x] }
+			if ($Spectrum[$Value]->[$x] > $xMaxGlobal) { $xMaxGlobal = $Spectrum[$Value]->[$x] }
+		}
+	}
+	
+	if (not $Options->{y}) {
+		# if no yrange was defined by the user, each spectrum is read and the globally smallest
+		# and greatest wavelength determined.
+		foreach $Value ( 0 .. $#Spectrum ) {
+			if ($Spectrum[$Value]->[$y] < $yMinGlobal) { $yMinGlobal = $Spectrum[$Value]->[$y] }
+			if ($Spectrum[$Value]->[$y] > $yMaxGlobal) { $yMaxGlobal = $Spectrum[$Value]->[$y] }
+		}
+	}
+	
+	if (not $Options->{z} and defined $Spectrum[0]->[$z]) {
+		# if no zrange was defined by the user, each spectrum is read and the globally smallest
+		# and greatest wavelength determined.
+		foreach $Value ( 0 .. $#Spectrum ) {
+			if ($Spectrum[$Value]->[$z] < $zMinGlobal) { $zMinGlobal = $Spectrum[$Value]->[$z] }
+			if ($Spectrum[$Value]->[$z] > $zMaxGlobal) { $zMaxGlobal = $Spectrum[$Value]->[$z] }
+		}
+	}
+	
+	# Automatically enable lines instead of curves for line spectra. The graph type is saved for each
+	# file individually here so that it is possible later on to override the global selection of e.g.
+	# "lines". That way curve spectra ("lines") and line spectra ("impulses") can be plotted without
+	# interfering with each other's line style.
+	if    ($Options->{points})       { push @{$Parameters->{ThisGraphType}}, "points";   }
+	elsif ($Options->{dots})         { push @{$Parameters->{ThisGraphType}}, "dots";     }
+	elsif ($Options->{pm3d})         { push @{$Parameters->{ThisGraphType}}, "pm3d";     }
+	elsif ($Options->{impulses})     { push @{$Parameters->{ThisGraphType}}, "impulses"; }
+	elsif ($File =~ m/\.(cdl|abl)$/) { push @{$Parameters->{ThisGraphType}}, "impulses"; }
+	                            else { push @{$Parameters->{ThisGraphType}}, "lines";    }
+	
+	++$Count;  # used to link the current file to a -using value
+}
+
+# cut off the real part of the ranges and add a 10%  margin to the smallest and greatest value
+if ($xMinGlobal > 0 and $xMaxGlobal > 0) {
+	$xMinGlobal = int ($xMinGlobal - abs (0.1 * $xMinGlobal));
+	$xMaxGlobal = int ($xMaxGlobal + abs (0.1 * $xMaxGlobal));
+}
+
+if ($yMinGlobal > 0 and $yMaxGlobal > 0) {
+	$yMinGlobal = int ($yMinGlobal - abs (0.1 * $yMinGlobal));
+	$yMaxGlobal = int ($yMaxGlobal + abs (0.1 * $yMinGlobal));
+}
+
+if ($zMinGlobal > 0 and $zMaxGlobal > 0) {
+	$zMinGlobal = int ($zMinGlobal - abs (0.1 * $zMinGlobal));
+	$zMaxGlobal = int ($zMaxGlobal + abs (0.1 * $zMaxGlobal));
+}
+
+
+####################################################################################################
+# determine xrange and xtics
+####################################################################################################
+
+if (defined $Options->{x}) {
+	if (scalar @{$Options->{x}} == 2) {
+		$XMIN = $Options->{x}->[0];
+		$XMAX = $Options->{x}->[1];
+		$Parameters->{xrange} = "$XMIN:$XMAX";
+	}
+	elsif (scalar @{$Options->{x}} == 1) { # if just a number is given
+		$Parameters->{xrange} = -$Options->{x}->[0] . ":" . $Options->{x}->[0];
+		$XMIN = -$Options->{x}->[0];
+		$XMAX =  $Options->{x}->[0];
+		$Parameters->{xrange} = "$XMIN:$XMAX";
+	}
+	else {
+		print STDERR "\nERROR: x range must be given as e.g. -x 150 250\n\n";
+		exit 4;
+	}
+}
+elsif ($Options->{CDLD}) { # if no range was given, calculate an appropriate range for CD and LD spectra
+	# If no xrange was given by the user, the standard ranges defined under "Configuration Variables"
+	# are used. However, if the *real* range of the spectra does not fall in between these values,
+	# the smallest and greatest wavelength determined from the files is used.
+	if ( ($XMAX < $xMinGlobal) or ($XMIN > $xMaxGlobal) ) {
+		$Parameters->{xrange} = "$xMinGlobal:$xMaxGlobal";
+		$Options->{x} =  [$xMinGlobal, $xMaxGlobal];
+	}
+	else {
+		$Parameters->{xrange} = "$XMIN:$XMAX";
+		$Options->{x} =  [$XMIN, $XMAX];
+	}
+}
+else { # for all other files it is left to gnuplot to determine the xrange
+}
+
+if (defined $Options->{xtics})   { $Parameters->{xtics}   = $Options->{xtics}   }
+if (defined $Options->{mxtics})  { $Parameters->{mxtics}  = $Options->{mxtics}  }
+if (defined $Options->{noxtics}) { $Parameters->{noxtics} = $Options->{noxtics} }
+
+if (defined $Options->{ytics})   { $Parameters->{ytics}   = $Options->{ytics}   }
+if (defined $Options->{mytics})  { $Parameters->{mytics}  = $Options->{mytics}  }
+if (defined $Options->{noytics}) { $Parameters->{noytics} = $Options->{noytics} }
+
+if (defined $Options->{ztics})   { $Parameters->{ztics}   = $Options->{ztics}   }
+if (defined $Options->{mztics})  { $Parameters->{mztics}  = $Options->{mztics}  }
+if (defined $Options->{noztics}) { $Parameters->{noztics} = $Options->{noztics} }
+
+
+
+####################################################################################################
+# Determine the extrema and the ranges of the y axis
+####################################################################################################
+
+if (defined $Options->{y}) { # if a yrange was given
+	if (scalar @{$Options->{y}} == 2) { # if it is given as -y min max
+		$Parameters->{yrange} = $Options->{y}->[0] . ":" . $Options->{y}->[1];
+		
+		$yMin = $Options->{y}->[0];
+		$yMax = $Options->{y}->[1];
+		
+		# determine the absolute maximum of the two extrema
+		if ($yMax < abs $yMin) { $AbsoluteMaximum = abs $yMin }
+		                  else { $AbsoluteMaximum = $yMax     }
+	}
+	elsif (scalar @{$Options->{y}} == 1) { # if just a number is given
+		$Parameters->{yrange} = -$Options->{y}->[0] . ":" . $Options->{y}->[0];
+		$yMin = -$Options->{y}->[0];
+		$yMax =  $Options->{y}->[0];
+		$AbsoluteMaximum = $yMax;
+	}
+	else {
+		print STDERR "\nERROR: -y needs one or two parameters, ", scalar @{$Options->{y}}, " were found!\n\n";
+		exit 5;
+	}
+	
+	if (defined $Options->{ytics}) {
+		$Parameters->{ytics} = $Options->{ytics};
+	}
+	else {
+		# in this case, the user defined maximum is taken, but &SetScale
+		# is used to determine a reasonable ticscale	
+		($yMax, $TicScale) = &SetScale ($AbsoluteMaximum);
+		
+		$Parameters->{ytics} = $TicScale;
+	}
+}
+elsif ($Options->{CDLD}) { # if no range was given, calculate an appropriate range for CD and LD spectra
+	$yMin =  1E20; # something very big for the first comparison
+	$yMax = -1E20; # something very small for the first comparison
+	
+	foreach $File ( @{$Parameters->{AllFiles}} ) {
+		# determine the extrema
+		@Extrema = &GetExtrema ($File);
+		
+		if ($yMin > $Extrema[0]) { $yMin = $Extrema[0] }
+		if ($yMax < $Extrema[1]) { $yMax = $Extrema[1] }
+	}
+	
+	# determine the absolute maximum of the two extrema
+	if ($yMax < abs $yMin) { $AbsoluteMaximum = abs $yMin }
+	                  else { $AbsoluteMaximum = $yMax     }
+	
+	# determine the maximum y value and the ticscale
+	($yMax, $TicScale) = &SetScale ($AbsoluteMaximum);
+	
+	# set the yrange between 0 and the maximum for absorbance spectra and -Max:Max for all others
+	if ($Parameters->{AllFiles}[0] =~ m/\.(abl|ab)$/) {
+		$Parameters->{yrange} = "0:$yMax";
+	}
+	else {
+		$Parameters->{yrange} = "-$yMax:$yMax";
+	}
+	
+	$Parameters->{ytics} = $TicScale;
+	
+	if (defined $Options->{ytics}) {
+		$Parameters->{ytics} = $Options->{ytics};
+	}
+	else {
+		$Parameters->{ytics} = $TicScale;
+	}
+	
+	if (defined $Options->{noytics}) { $Parameters->{noytics} = $Options->{noytics} }
+}
+
+
+####################################################################################################
+# Determine the extrema and the ranges of the z axis
+####################################################################################################
+
+if (defined $Options->{z}) { # if a zrange was given
+	if (scalar @{$Options->{z}} == 2) { # if it is given as -y min max
+		$Parameters->{zrange} = $Options->{z}->[0] . ":" . $Options->{z}->[1];
+		
+		$zMin = $Options->{z}->[0];
+		$zMax = $Options->{z}->[1];
+	}
+	elsif (scalar @{$Options->{z}} == 1) { # if just a number is given
+		$Parameters->{zrange} = -$Options->{z}->[0] . ":" . $Options->{z}->[0];
+		$zMin = -$Options->{z}->[0];
+		$zMax =  $Options->{z}->[0];
+	}
+	else {
+		print STDERR "\nERROR: -z needs one or two parameters, ", scalar @{$Options->{z}}, " were found!\n\n";
+		exit 5;
+	}
+	
+	if (defined $Options->{ztics}) {
+		$Parameters->{ztics} = $Options->{ztics};
+	}
+	else {
+		# in this case, the user defined maximum is taken, but &SetScale
+		# is used to determine a reasonable ticscale	
+		($zMax, $TicScale) = &SetScale ($AbsoluteMaximum);
+		
+		$Parameters->{ztics} = $TicScale;
+	}
+}
+
+
+####################################################################################################
+# determine the name of the output file
+####################################################################################################
+
+if (defined $Options->{p}) { $Parameters->{p} = 1; }
+
+if ($Options->{o}) {
+	$Parameters->{OutFile} = $Options->{o};
+	
+	# enable gif creation in case the .gif extension is given
+	if ($Parameters->{OutFile} =~ m/\.gif$/) { $Parameters->{gif} = 1 }
+	
+	# add the extension depending on the default ps output or requested gif output
+	if ($Options->{gif}) {
+		$Parameters->{LabelFormat} = "";
+		if ($Parameters->{OutFile} !~ m/\.gif$/) { $Parameters->{OutFile} = $Parameters->{OutFile} . ".gif" }
+	}
+	else {
+		if ($Parameters->{OutFile} !~ m/\.ps$/) { $Parameters->{OutFile} = $Parameters->{OutFile} . ".ps" }
+	}
+}
+else { # no output file given => create an output filename
+	if (not $Options->{p}) { # if "preview" is not requested
+		# take the full filename, to have file names like .cd.pd and .ld.ps
+		if ($Options->{gif}) {
+			$Parameters->{LabelFormat} = "";
+			$Parameters->{OutFile} = $Parameters->{AllFiles}[0] . ".gif"; # the name of the first given file
+		}
+		else {
+			$Parameters->{OutFile} = $Parameters->{AllFiles}[0] . ".ps"; # the name of the first given file
+		}
+	}
+}
+
+
+####################################################################################################
+# write a cfg file if requested
+####################################################################################################
+
+if ($Options->{cfg}) {
+	if ($Parameters->{OutFile}) {
+		$Parameters->{CfgFile} = $Parameters->{OutFile};
+		$Parameters->{CfgFile} =~ s/\.ps$//;
+		$Parameters->{CfgFile} = $Parameters->{CfgFile} . ".cfg";
+	}
+	else {
+		$Parameters->{CfgFile} = $Parameters->{AllFiles}[0] . ".cfg"; # the name of the first given file
+	}
+	
+	my $String;
+	foreach $String ( @Arguments ) {
+		# if the argument contains blanks, enclose it in quotation marks
+		if ($String =~ m/\s/) { $String = "\"$String\"" }
+	}
+	
+	# join all command line arguments separated by spaces
+	$String = join " ", @Arguments;
+	
+	# remove the -cfg switch (and an optional blank) to avoid recreation of the file when running it
+	$String =~ s/-cfg ?//g;
+	
+	# write the configuration file
+	open CFG, ">$Parameters->{CfgFile}";
+	print CFG "plotspectrum $String\n";
+	close CFG;
+	
+	# set it executable
+	chmod 0775, $Parameters->{CfgFile};
+}
+
+
+####################################################################################################
+# Deal with settings for the contour plot
+####################################################################################################
+
+if ($Options->{contour}) {
+	if (not defined $zMinGlobal or not defined $zMaxGlobal) {
+		print STDERR "\nERROR: A problem occurred determining the z range (3D required for contours).\n";
+		exit 6;
+	}
+	
+	$Parameters->{contour} = 1;
+	$Parameters->{ContStart} = $zMinGlobal;
+	$Parameters->{ContEnd}   = $zMaxGlobal;
+	$Parameters->{ContInc}   = (abs ($zMinGlobal) + abs ($zMaxGlobal)) / $Options->{contour};
+	
+	if (not $Options->{cbase} and not $Options->{csurface} and not $Options->{cboth}) {
+		$Parameters->{cbase} = 1;
+	}
+}
+
+if ($Options->{cbase} or $Options->{csurface} or $Options->{cboth}) { $Parameters->{contour}  = 1; }
+if ($Options->{cbase})    { $Parameters->{cbase}    = 1; }
+if ($Options->{csurface}) { $Parameters->{csurface} = 1; }
+if ($Options->{cboth})    { $Parameters->{cboth}    = 1; }
+
+# check whether all files contain valid grid data, if contours are to be plotted
+if ($Parameters->{contour} or $Options->{pm3d}) {
+	for $i ( 0 .. $#{$Parameters->{AllFiles}} ) {
+		if ($Options->{grid}) {
+			if ($Parameters->{AllFiles}[$i] !~ m/\.grid/) {
+				# only add .grid, do not remove the existing extension
+				$OutFile = $Parameters->{AllFiles}[$i] . ".grid";
+			}
+			
+			&CreateGridData ($Parameters->{AllFiles}[$i], $Options->{grid}, $OutFile);
+			
+			# use the output file to plot instead of the original one
+			$Parameters->{AllFiles}[$i] = $OutFile;
+		}
+		
+		my $ValidGridData = &CheckGridData ($Parameters->{AllFiles}[$i]);
+		
+		if (not $ValidGridData) {
+			if ($Options->{grid}) {
+				print STDERR "\nERROR: The attempt to create gnuplot grid date failed for file $Parameters->{AllFiles}[$i].\n";
+				print STDERR "       This was for column $Options->{grid}, maybe try another one.\n";
+				exit 8;
+			}
+			else {
+				print STDERR "\nERROR: The file $Parameters->{AllFiles}[$i] does not contain gnuplot grid data (required for PM3D\n";
+				print STDERR "       and contour plots). Use the -grid x option to create grid data.\n\n";
+				exit 10;
+			}
+		}
+	}
+} # of if ($Parameters->{contour} or $Options->{pm3d})
+
+
+####################################################################################################
+# Determine the style of the legend
+####################################################################################################
+
+# the old KeyStyle (mostly default settings)
+# my $KeyStyle = "right top Left outside reverse samplen 2 spacing 1.25 title \"\" nobox";
+
+$Parameters->{KeyStyle} = "";
+
+if    ($Options->{kright})     { $Parameters->{KeyStyle} .= "right "     }
+elsif ($Options->{kleft} )     { $Parameters->{KeyStyle} .= "left "      }
+else                           { $Parameters->{KeyStyle} .= "right "     }
+
+if    ($Options->{ktop})       { $Parameters->{KeyStyle} .= "top "       }
+elsif ($Options->{kbottom})    { $Parameters->{KeyStyle} .= "bottom "    }
+else                           { $Parameters->{KeyStyle} .= "top "       }
+
+if    ($Options->{kbelow})     { $Parameters->{KeyStyle} .= "below "     }
+
+if    ($Options->{kinside})    { $Parameters->{KeyStyle} .= ""           }
+elsif ($Options->{koutside})   { $Parameters->{KeyStyle} .= "outside "   }
+else                           { $Parameters->{KeyStyle} .= ""           }
+
+if    ($Options->{kRight})     { $Parameters->{KeyStyle} .= "Right "     }
+elsif ($Options->{kLeft} )     { $Parameters->{KeyStyle} .= "Left "      }
+else                           { $Parameters->{KeyStyle} .= "Left "      }
+
+if    ($Options->{kreverse})   { $Parameters->{KeyStyle} .= "reverse "   }
+elsif ($Options->{knoreverse}) { $Parameters->{KeyStyle} .= "noreverse " }
+else                           { $Parameters->{KeyStyle} .= "reverse "   }
+
+# add some other stuff
+$Parameters->{KeyStyle} = $Parameters->{KeyStyle} . "samplen $Options->{ksamplen} spacing $Options->{kspacing} title \"\" nobox";
+
+
+####################################################################################################
+# Determine the name of the command file for gnuplot
+####################################################################################################
+
+if ($Parameters->{OutFile}) {
+	$BaseName = GetBaseName ($Parameters->{OutFile});
+}
+else {
+	$BaseName = $Parameters->{AllFiles}[0]; # the name of the first given file
+}
+
+$Parameters->{CommandFile} = "$BaseName.cmd";
+
+
+####################################################################################################
+# Check for curve smoothing options
+####################################################################################################
+
+$Parameters->{unique}    = $Options->{unique};
+$Parameters->{bezier}    = $Options->{bezier};
+$Parameters->{sbezier}   = $Options->{sbezier};
+$Parameters->{csplines}  = $Options->{csplines};
+$Parameters->{acsplines} = $Options->{acsplines};
+
+
+####################################################################################################
+# Determine the axes labels
+####################################################################################################
+
+if ($Options->{xlabel}) {
+	$Parameters->{xlabel} = "\"$Options->{xlabel}\" $Parameters->{LabelFormat}";
+}
+else {
+	if ($Options->{wn}) {
+		$Parameters->{xlabel} = "$XLABELWN $Parameters->{LabelFormat}";
+	}
+	elsif ($Options->{CDLD} or $Options->{w}) {
+		$Parameters->{xlabel} = "$XLABEL $Parameters->{LabelFormat}";
+	}
+}
+
+
+if ($Options->{ylabel}) {
+	$Parameters->{ylabel} = "\"$Options->{ylabel}\" $Parameters->{LabelFormat}";
+}
+else {
+	# first check if any specific label was requested
+	if ($Options->{ab}) {
+		$Parameters->{ylabel} = "$YLABELAB $Parameters->{LabelFormat}";
+	}
+	elsif ($Options->{ld}) {
+		$Parameters->{ylabel} = "$YLABELLD $Parameters->{LabelFormat}";
+	}
+	elsif ($Options->{ldr}) {
+		$Parameters->{ylabel} = "$YLABELLDR $Parameters->{LabelFormat}";
+	}
+	elsif ($Options->{dr}) {
+		$Parameters->{ylabel} = "$YLABELDR $Parameters->{LabelFormat}";
+	}
+	elsif ($Options->{e}) {
+		$Parameters->{ylabel} = "$YLABELELL $Parameters->{LabelFormat}";
+	}
+	else {
+		# if no ylabel and no parameter like -ldr was given, determine the label from the file extension
+		
+		if ($Parameters->{AllFiles}[0] =~ m/\.(abl|ab)$/) {
+			$Parameters->{ylabel} = "$YLABELAB $Parameters->{LabelFormat}";
+		}
+		elsif ($Parameters->{AllFiles}[0] =~ m/\.(cdl|cd)$/) {
+			if ($Options->{a}) {
+				$Parameters->{ylabel} = "$YLABELCDAB $Parameters->{LabelFormat}";
+			}
+			else {
+				$Parameters->{ylabel} = "$YLABELELL $Parameters->{LabelFormat}";
+			}
+		}
+		elsif ($Parameters->{AllFiles}[0] =~ m/\.(ld)$/) {
+			$Parameters->{ylabel} = "$YLABELLD $Parameters->{LabelFormat}";
+		}
+		elsif ($Parameters->{AllFiles}[0] =~ m/\.(dr)$/) {
+			$Parameters->{ylabel} = "$YLABELDR $Parameters->{LabelFormat}";
+		}
+		elsif ($Parameters->{AllFiles}[0] =~ m/\.(ldr)$/) {
+			$Parameters->{ylabel} = "$YLABELLDR $Parameters->{LabelFormat}";
+		}
+	}
+}
+
+if ($Options->{zlabel}) {
+	$Parameters->{zlabel} = "\"$Options->{zlabel}\" 0,-1 $Parameters->{LabelFormat}";
+}
+
+
+####################################################################################################
+# Create the command file and run gnuplot
+####################################################################################################
+
+# create the command file for gnuplot
+&CreateCommandFile ($Parameters);
+
+my @Output = `gnuplot $Parameters->{CommandFile} 2>&1`;
+
+# discard leading empty lines of the @Output
+while (@Output and $Output[0] eq "\n") { shift @Output }
+
+# only print the gnuplot output if there actually is something to output (this omits the two empty 
+# lines which are usually printed and mess up the output of scripts plotting hundreds of spectra)
+if (@Output) { print join "", @Output }
+
+if (not $Options->{cmd}) {
+	system "rm $Parameters->{CommandFile}";
+}
+
+if ($Options->{pdf} and $Options->{gif}) {
+	print STDERR "\nERROR: A pdf can only be created from a postscript file, not from a gif.\n\n";
+	exit 12;
+}
+
+if (not $Options->{gif} and $Parameters->{OutFile} and ($Options->{d} or $Options->{dl1} or $Options->{dl2}) ) {
+	&ChangePostscriptDashlength ($Parameters->{OutFile});
+}
+
+if ($Options->{pdf} and not $Options->{gif}) {
+	system "pstopdf $Parameters->{OutFile}";
+}
+
+exit 0;  # return success
+
+
+
+
+####################################################################################################
+####################################################################################################
+# Subroutines
+####################################################################################################
+####################################################################################################
+
+sub GetExtrema { # determines the lowest and highest value of a file
+	my $File = shift;
+	my (@Content, $Maximum, $Minimum, @Columns, $Line, $CurValue);
+	
+	open (FILE, "$File") or die "\nCould not open $File: $!";
+	@Content = <FILE>;
+	close FILE;
+	chomp @Content;
+	
+	$Maximum = 0;
+	$Minimum = 0;
+	
+	until (not @Content) {
+		$Line = shift @Content;
+		
+		if ($Line =~ m/^(\s+)?#/) { next } # if the line starts with a #, ignore it (it's a comment)
+		
+		$Line =~ s/^[\s\t]+//g;  # remove leading blanks or tabs to avoid problems with split
+		$Line =~ s/\s+/\t/g;     # replace multiple white spaces with one tab 
+		
+		@Columns = split /\t+/, $Line;
+		
+		# only consider the value if it falls into the x-range to be plotted
+		if ($Columns[0] < $Options->{x}[0] or $Options->{x}[1] < $Columns[0]) { next }
+		
+		$CurValue = $Columns[1]; # take the absolute value
+		
+		if ($CurValue > $Maximum) { $Maximum = $CurValue }
+		if ($CurValue < $Minimum) { $Minimum = $CurValue }
+	}
+	
+	return ($Minimum, $Maximum);
+} # of sub GetExtrema
+
+
+####################################################################################################
+####################################################################################################
+
+
+sub SetScale { # sets a reasonable scale for the y-axis
+	my $Maximum = shift;
+	my ($yMax, $TicScale);
+	
+	if     ($Maximum >= 100000)                                  {$yMax = $Maximum*1.1; $TicScale =  0}
+	elsif (($Maximum >=  95000)      && ($Maximum < 100000))     {$yMax = 100000;     $TicScale =  50000}
+	elsif (($Maximum >=  90000)      && ($Maximum <  95000))     {$yMax =  95000;     $TicScale =  45000}
+	elsif (($Maximum >=  85000)      && ($Maximum <  90000))     {$yMax =  90000;     $TicScale =  45000}
+	elsif (($Maximum >=  80000)      && ($Maximum <  85000))     {$yMax =  85000;     $TicScale =  40000}
+	elsif (($Maximum >=  75000)      && ($Maximum <  80000))     {$yMax =  80000;     $TicScale =  40000}
+	elsif (($Maximum >=  70000)      && ($Maximum <  75000))     {$yMax =  75000;     $TicScale =  35000}
+	elsif (($Maximum >=  65000)      && ($Maximum <  70000))     {$yMax =  70000;     $TicScale =  35000}
+	elsif (($Maximum >=  60000)      && ($Maximum <  65000))     {$yMax =  65000;     $TicScale =  30000}
+	elsif (($Maximum >=  55000)      && ($Maximum <  60000))     {$yMax =  60000;     $TicScale =  30000}
+	elsif (($Maximum >=  50000)      && ($Maximum <  55000))     {$yMax =  55000;     $TicScale =  25000}
+	elsif (($Maximum >=  45000)      && ($Maximum <  50000))     {$yMax =  50000;     $TicScale =  25000}
+	elsif (($Maximum >=  40000)      && ($Maximum <  45000))     {$yMax =  45000;     $TicScale =  20000}
+	elsif (($Maximum >=  35000)      && ($Maximum <  40000))     {$yMax =  40000;     $TicScale =  20000}
+	elsif (($Maximum >=  30000)      && ($Maximum <  35000))     {$yMax =  35000;     $TicScale =  15000}
+	elsif (($Maximum >=  25000)      && ($Maximum <  30000))     {$yMax =  30000;     $TicScale =  15000}
+	elsif (($Maximum >=  20000)      && ($Maximum <  25000))     {$yMax =  25000;     $TicScale =  10000}
+	elsif (($Maximum >=  15000)      && ($Maximum <  20000))     {$yMax =  20000;     $TicScale =  10000}
+	elsif (($Maximum >=  10000)      && ($Maximum <  15000))     {$yMax =  15000;     $TicScale =   5000}
+	elsif (($Maximum >=   9000)      && ($Maximum <  10000))     {$yMax =  10000;     $TicScale =   5000}
+	elsif (($Maximum >=   8000)      && ($Maximum <   9000))     {$yMax =   9000;     $TicScale =   3000}
+	elsif (($Maximum >=   7000)      && ($Maximum <   8000))     {$yMax =   8000;     $TicScale =   4000}
+	elsif (($Maximum >=   6000)      && ($Maximum <   7000))     {$yMax =   7000;     $TicScale =   3500}
+	elsif (($Maximum >=   5000)      && ($Maximum <   6000))     {$yMax =   6000;     $TicScale =   3000}
+	elsif (($Maximum >=   4000)      && ($Maximum <   5000))     {$yMax =   5000;     $TicScale =   2500}
+	elsif (($Maximum >=   3000)      && ($Maximum <   4000))     {$yMax =   4000;     $TicScale =   2000}
+	elsif (($Maximum >=   2000)      && ($Maximum <   3000))     {$yMax =   3000;     $TicScale =   1500}
+	elsif (($Maximum >=   1000)      && ($Maximum <   2000))     {$yMax =   2000;     $TicScale =   1000}
+	elsif (($Maximum >=    900)      && ($Maximum <   1000))     {$yMax =   1000;     $TicScale =    500}
+	elsif (($Maximum >=    800)      && ($Maximum <    900))     {$yMax =    900;     $TicScale =    300}
+	elsif (($Maximum >=    700)      && ($Maximum <    800))     {$yMax =    800;     $TicScale =    400}
+	elsif (($Maximum >=    600)      && ($Maximum <    700))     {$yMax =    700;     $TicScale =    350}
+	elsif (($Maximum >=    500)      && ($Maximum <    750))     {$yMax =    600;     $TicScale =    300}
+	elsif (($Maximum >=    400)      && ($Maximum <    500))     {$yMax =    500;     $TicScale =    250}
+	elsif (($Maximum >=    300)      && ($Maximum <    400))     {$yMax =    400;     $TicScale =    200}
+	elsif (($Maximum >=    200)      && ($Maximum <    300))     {$yMax =    300;     $TicScale =    150}
+	elsif (($Maximum >=    100)      && ($Maximum <    200))     {$yMax =    200;     $TicScale =    100}
+	elsif (($Maximum >=     95)      && ($Maximum <    100))     {$yMax =    100;     $TicScale =     25}
+	elsif (($Maximum >=     90)      && ($Maximum <     95))     {$yMax =     95;     $TicScale =     45}
+	elsif (($Maximum >=     85)      && ($Maximum <     90))     {$yMax =     90;     $TicScale =     45}
+	elsif (($Maximum >=     80)      && ($Maximum <     85))     {$yMax =     85;     $TicScale =     40}
+	elsif (($Maximum >=     75)      && ($Maximum <     80))     {$yMax =     80;     $TicScale =     40}
+	elsif (($Maximum >=     70)      && ($Maximum <     75))     {$yMax =     75;     $TicScale =     35}
+	elsif (($Maximum >=     65)      && ($Maximum <     70))     {$yMax =     70;     $TicScale =     35}
+	elsif (($Maximum >=     60)      && ($Maximum <     65))     {$yMax =     65;     $TicScale =     30}
+	elsif (($Maximum >=     55)      && ($Maximum <     60))     {$yMax =     60;     $TicScale =     30}
+	elsif (($Maximum >=     50)      && ($Maximum <     55))     {$yMax =     55;     $TicScale =     25}
+	elsif (($Maximum >=     45)      && ($Maximum <     50))     {$yMax =     50;     $TicScale =     25}
+	elsif (($Maximum >=     40)      && ($Maximum <     45))     {$yMax =     45;     $TicScale =     20}
+	elsif (($Maximum >=     35)      && ($Maximum <     40))     {$yMax =     40;     $TicScale =     20}
+	elsif (($Maximum >=     30)      && ($Maximum <     35))     {$yMax =     35;     $TicScale =     10}
+	elsif (($Maximum >=     25)      && ($Maximum <     30))     {$yMax =     30;     $TicScale =     10}
+	elsif (($Maximum >=     20)      && ($Maximum <     25))     {$yMax =     25;     $TicScale =      5}
+	elsif (($Maximum >=     15)      && ($Maximum <     20))     {$yMax =     20;     $TicScale =      5}
+	elsif (($Maximum >=     10)      && ($Maximum <     15))     {$yMax =     15;     $TicScale =      5}
+	elsif (($Maximum >=      9)      && ($Maximum <     10))     {$yMax =     10;     $TicScale =      5}
+	elsif (($Maximum >=      8)      && ($Maximum <      9))     {$yMax =      9;     $TicScale =      3}
+	elsif (($Maximum >=      7)      && ($Maximum <      8))     {$yMax =      8;     $TicScale =      2}
+	elsif (($Maximum >=      6)      && ($Maximum <      7))     {$yMax =      7;     $TicScale =      2.0}
+	elsif (($Maximum >=      5)      && ($Maximum <      6))     {$yMax =      6;     $TicScale =      2.0}
+	elsif (($Maximum >=      4)      && ($Maximum <      5))     {$yMax =      5;     $TicScale =      1.0}
+	elsif (($Maximum >=      3)      && ($Maximum <      4))     {$yMax =      4;     $TicScale =      1.0}
+	elsif (($Maximum >=      2)      && ($Maximum <      3))     {$yMax =      3;     $TicScale =      1.5}
+	elsif (($Maximum >=      1.5)    && ($Maximum <      2.0))   {$yMax =      2;     $TicScale =      0.5}
+	elsif (($Maximum >=      1.0)    && ($Maximum <      1.5))   {$yMax =      1.5;   $TicScale =      0.5}
+	elsif (($Maximum >=      0.9)    && ($Maximum <      1.0))   {$yMax =      1.0;   $TicScale =      0.5}
+	elsif (($Maximum >=      0.8)    && ($Maximum <      0.9))   {$yMax =      0.9;   $TicScale =      0.3}
+	elsif (($Maximum >=      0.7)    && ($Maximum <      0.8))   {$yMax =      0.8;   $TicScale =      0.4}
+	elsif (($Maximum >=      0.6)    && ($Maximum <      0.7))   {$yMax =      0.7;   $TicScale =      0.20}
+	elsif (($Maximum >=      0.5)    && ($Maximum <      0.6))   {$yMax =      0.6;   $TicScale =      0.20}
+	elsif (($Maximum >=      0.4)    && ($Maximum <      0.5))   {$yMax =      0.5;   $TicScale =      0.20}
+	elsif (($Maximum >=      0.3)    && ($Maximum <      0.4))   {$yMax =      0.4;   $TicScale =      0.20}
+	elsif (($Maximum >=      0.2)    && ($Maximum <      0.3))   {$yMax =      0.3;   $TicScale =      0.10}
+	elsif (($Maximum >=      0.1)    && ($Maximum <      0.2))   {$yMax =      0.2;   $TicScale =      0.10}
+	elsif (($Maximum >=      0.05)   && ($Maximum <      0.1))   {$yMax =      0.1;   $TicScale =      0.050}
+	elsif (($Maximum >=      0.01)   && ($Maximum <      0.05))  {$yMax =      0.05;  $TicScale =      0.010}
+	elsif (($Maximum >=      0.001)  && ($Maximum <      0.01))  {$yMax =      0.01;  $TicScale =      0.005}
+	elsif (($Maximum >=      0.0001) && ($Maximum <      0.001)) {$yMax =      0.001; $TicScale =      0.0002}
+	elsif (($Maximum >=      0     ) && ($Maximum <      0.001)) {$yMax =      0.001; $TicScale =      0.0001}
+	
+	else {
+		print STDERR "\nERROR: Could not interpret the maximum value $Maximum\n\n";
+		exit 14;
+	}
+	
+	return ($yMax, $TicScale);
+} # of sub SetScale
+
+
+####################################################################################################
+####################################################################################################
+
+
+sub GetEvery { # determines a value for the every command if linespoints are chosen
+	my $File = shift;
+	my $xrange = shift;
+	my $Using  = shift;
+	
+	my (@Spectrum, $Min, $Max, $NumberOfPoints, $Every, $PointsEveryX, $x, $y);
+	
+	if ($Using) {
+		#    everything till the colon
+		$x = substr $Using, 0, index (":", $Using) -1;
+		--$x;  # gnuplot starts counting at 1, Perl at 0
+		
+		#    everything after the colon
+		$y = substr $Using, index (":", $Using);
+		--$y;  # gnuplot starts counting at 1, Perl at 0
+	}
+	else {
+		$x = 0;
+		$y = 1;
+	}
+	
+	# read in the spectrum, ascending wavelengths are assured
+	@Spectrum = ReadSpectrum ($File);
+	
+	if (not $xrange) {
+		print STDERR "\nERROR: xrange could not be determined.\n\n";
+		exit 16;
+	}
+	
+	if (scalar @Spectrum == 0) { return "" }
+		
+	# the xrange is given as 150:250, separate the minimum and maximum value
+	$Min = substr $xrange, 0, index ($xrange, ":");
+	$Max = substr $xrange, index ($xrange, ":") + 1;
+	
+	if (not defined $Min or not defined $Max) { return "" }
+	
+	# remove the first data points until the wavelength is bigger than the minimum of the graph
+	while (@Spectrum and $Spectrum[0]->[$x] < $Min) { shift @Spectrum }
+	
+	# remove the last data points until the wavelength is smaller than the maximum of the graph
+	while (@Spectrum and $Spectrum[$#Spectrum]->[$x] > $Max) { pop @Spectrum }
+	
+	# determine the number of data points in the plotted region
+	$NumberOfPoints = scalar @Spectrum;
+	
+	if ($NumberOfPoints == 0) { return "" }
+	
+	$PointsEveryX = $NumberOfPoints/($Max - $Min);
+	
+	# if the number of points per x-unit is larger than requested by the user, use the user's value
+	# instead, otherwise print all the values
+	if ($PointsEveryX < $Parameters->{every}) { $Every = $Parameters->{every} }
+	                                     else { $Every = 1                    }
+	
+	# if -every was not given (1 is default value) and there are more than 5 points per x-value
+	# (what would result in a curve with only points, i.e. three times as thick), then force
+	# plotting just every e.g. 35th point
+	if ($Options->{every} == 1 and $PointsEveryX > 1) { $Every = $Parameters->{pd} }
+	
+	return "every $Every ";
+} # of sub GetEvery
+
+
+####################################################################################################
+####################################################################################################
+
+
+sub CreateCommandFile { # creates the command file for gnuplot
+	my $Parameters = shift;
+	my ($Comment, $File, $CurBaseName, $Title, $CurLineStyle, $Counter, $i, $Every, $Smooth, $Using);
+	my ($LineStyle, @LineStyles, $LineWidth, @LineWidths, $PointType, @PointTypes, $LineType, @LineTypes);
+	my ($LineColour, @LineColours, @DefaultColours, $FileNameLength, $TitleLength);
+	
+	open PLOT, ">$Parameters->{CommandFile}" or die "ERROR: Could not create file $File: $!";
+	
+	print PLOT "set encoding iso_8859_1\n";
+	
+	# if a preview is requested, the code for output to a file is still added to the command file but
+	# commented out for easy plotting to a file later on
+	if ($Parameters->{p}) { $Comment = "# "; }
+	                 else { $Comment = "";   }
+	
+	if ($Parameters->{OutFile}) {
+		if ($Parameters->{gif}) {
+			print PLOT $Comment . "set terminal gif enhanced large size $Parameters->{res} crop\n";
+		}
+		else {
+			print PLOT $Comment . "set terminal postscript enhanced $Parameters->{Colour} $Parameters->{SolidLines} $Parameters->{AxisFont}\n";
+		}
+		
+		print PLOT $Comment . "set output \"$Parameters->{OutFile}\"\n\n";
+	}
+	else {
+	}
+	
+	# for the final pause command, the setting has to be reversed
+	if ($Parameters->{p}) { $Comment = "";   }
+	                 else { $Comment = "# "; }
+	
+	
+	################################################################################
+	# Set up the colour sequence assigned to line styles 1-20
+	################################################################################
+	
+	my $ColourDefault = 0;
+	
+	# check whether a user-defined default was given
+	foreach $i ( @{$Options->{lc}} ) {
+			
+		if ($i =~ m/\*/) {
+			if ($ColourDefault) {
+				print STDERR "\nERROR: Only one line colour can be set to default with an asterisk.\n\n";
+				exit 18;
+			}
+			else {
+				$i =~ s/\*//g;        # remove the asterisk
+				$ColourDefault = $i;  # if true then the user has set a default value
+			}
+		}
+	}
+	
+	if ($ColourDefault) {
+		for $i ( 0 .. 9 ) { push @DefaultColours, $ColourDefault }
+	}
+	else {
+		# set up the default sequence of the line colours
+		@DefaultColours = qw/black blue red green magenta orange cyan coral brown/;
+	}
+	
+	# artificially "extend" the available indices in the array
+	push @DefaultColours, @DefaultColours;
+	push @DefaultColours, @DefaultColours;
+	
+	for $i (0 .. 19) { # 20 line styles are going to be predefined
+		if ($Options->{lc}[$i]) { $LineColours[$i] = "\"" . $Options->{lc}[$i] . "\""; }
+		                   else { $LineColours[$i] = "\"" . $DefaultColours[$i] . "\""; }
+	}
+	
+	
+	################################################################################
+	# Set up the line type sequence assigned to line styles 1-20
+	################################################################################
+	
+	for $i (0 .. 19) { # 20 line styles are going to be predefined
+		if ($Options->{lt}[$i]) { $LineTypes[$i] = $Options->{lt}[$i]; }
+		                   else { $LineTypes[$i] = $i+1;               }
+	}
+	
+	
+	################################################################################
+	# Set up the line width sequence assigned to line styles 1-20
+	################################################################################
+	
+	# Line with is set to a default value in $LineWidth, i.e. there is at least this
+	# one value. If there is only one value (default or given by the user) it is
+	# assigned to all line styles. If there's more than one, e.g. 3 then these three
+	# are assigned to the first three styles. The default width is assigned to all
+	# other styles unless the user declared a different width default with `*'
+	
+	if (scalar @{$Options->{lw}} == 1) {
+		# if only one width is given this is automatically the default for all styles
+		for $i (0 .. 19) { $LineWidths[$i] = $Options->{lw}[0] }
+	}
+	else {
+		my $Default = 0;
+		
+		# check whether a user-defined default was given
+		foreach $i ( @{$Options->{lw}} ) {
+			
+			if ($i =~ m/\*/) {
+				if ($Default) {
+					print STDERR "\nERROR: Only one line width can be set to default with an asterisk.\n\n";
+					exit 20;
+				}
+				else {
+					$Default = 1;     # if true then the user has set a default value
+					$i =~ s/\*//g;     # remove the asterisk
+					$LINEWIDTH = $i;  # set the new default
+				}
+			}
+		}
+		
+		# now set up the sequence of the line withs for the 20 line styles
+		for $i ( 0 .. 19 ) {
+			# if a specific line with was given for this style, use it, otherwise
+			# use the default (which may have been given by the user using *)
+			if ($Options->{lw}[$i]) { $LineWidths[$i] = $Options->{lw}[$i] }
+			                   else { $LineWidths[$i] = $LINEWIDTH;        }
+		}
+	}
+	
+	################################################################################
+	# Set up the point styles for the line styles 1-20
+	################################################################################
+	
+	# By default, the first 10 line styles are without point style (pt 0) and the
+	# following styles with point styles 1 to 10.
+	
+	if (not $Options->{pt}) { # if no point style is given
+		# no point style for the line styles 1 to 9
+		for $i (0 ..  8) { push @PointTypes, 0; }
+		# point styles 1 to 11 for the line styles 10 to 20
+		for $i (1 .. 11) { push @PointTypes, $i; }
+	}
+	else { # if the user has given point styles
+		my $PointTypeDefault = undef;
+		
+		# check whether a user-defined default was given
+		foreach $PointType ( @{$Options->{pt}} ) {
+			if ($PointType =~ m/\*/) {
+				if ($PointTypeDefault) {
+					print STDERR "\nERROR: Only one point style can be set to default with an asterisk.\n\n";
+					exit 25;
+				}
+				else {
+					$PointType =~ s/\*//g;            # remove the asterisk
+					$PointTypeDefault = $PointType;  # set the new default
+				}
+			}
+		}
+		
+		# now either a default for all styles was set or
+		for $i ( 0 .. 19 ) {
+			# if a point style was given for this line style, use it, otherwise
+			# use the default if one was defined or 0 to disable points
+			# it is checked for "defined" because the value could be "0"
+			if (defined $Options->{pt}[$i])    { push @PointTypes, $Options->{pt}[$i]; }
+			elsif (defined $PointTypeDefault)  { push @PointTypes, $PointTypeDefault;  }
+			                              else { push @PointTypes, 0;                  }
+		}
+	}
+	
+	
+	################################################################################
+	# Configure the contours
+	################################################################################
+	
+	if ($Parameters->{contour}) {
+		   if ($Parameters->{cboth})    { print PLOT "set contour both\n"    }
+		elsif ($Parameters->{cbase})    { print PLOT "set contour base\n"    }
+		elsif ($Parameters->{csurface}) { print PLOT "set contour surface\n" }
+
+		print PLOT "show contour\n\n";
+		
+		print PLOT "set cntrparam levels ";
+
+		if (defined $Parameters->{ContStart} and defined $Parameters->{ContInc} and defined $Parameters->{ContEnd}) {
+			print PLOT "incremental $Parameters->{ContStart}, $Parameters->{ContInc}, $Parameters->{ContEnd}\n\n";
+		}
+		else {
+			print PLOT "auto 10\n\n";
+		}
+	}
+	
+	
+	
+	################################################################################
+	
+	if ($Options->{view}) {
+		print PLOT "set view $Options->{view}\n";
+	}
+	
+	print PLOT "set size square $Parameters->{size}\n";
+	print PLOT "set xzeroaxis\n";
+	print PLOT "\n";
+	
+	# The line styles are saved in an array to be able to access the stings later one.
+	# This is neccessary to switch to linespoints, if a point type is defined in the style.
+	for $i ( 0 .. 19 ) {
+		# if the graph type is dots or points, there is no line style
+		if ($Parameters->{GraphType} !~ m/dots|points/) { $LineType  = sprintf "lt %2s", $LineTypes[$i]; }
+		                                           else { $LineType = "     ";                           }
+		
+		if ($PointTypes[$i]) { $PointType = sprintf "pt %2s", $PointTypes[$i]; }
+		                else { $PointType = "     ";                           }
+		
+		# (9 = length of "magenta" + two quotation marks)
+		if ($Parameters->{Colour} eq "colour") { $LineColour = sprintf " lc rgb %-9s ", $LineColours[$i];  }
+		                                  else { $LineColour = "";                                         }
+		
+		$LineWidth = sprintf "lw %2s", $LineWidths[$i];
+		$LineStyle = sprintf "%2s", $i+1;
+		
+		push @LineStyles, "set style line $LineStyle  $LineType  $PointType $LineColour $LineWidth\n";
+	}
+	
+	print PLOT join "", @LineStyles;
+	print PLOT "\n";
+	
+	print PLOT "set tics scale 1.0\n";
+	
+	if ($Parameters->{xtics}) {
+		print PLOT "set xtics border nomirror norotate $Parameters->{xtics}\n";
+	}
+	
+	if ($Parameters->{ytics}) {
+		print PLOT "set ytics border nomirror norotate $Parameters->{ytics}\n\n";
+	}
+	
+	if ($Parameters->{noxtics}) { print PLOT "unset xtics\n" }
+	if ($Parameters->{noytics}) { print PLOT "unset ytics\n\n" }
+	if ($Parameters->{noztics}) { print PLOT "unset ztics\n\n" }
+	
+	if ($Parameters->{mxtics})  { print PLOT "set mxtics $Parameters->{mxtics}\n" }
+	if ($Parameters->{mytics})  { print PLOT "set mytics $Parameters->{mytics}\n" }
+	if ($Parameters->{mztics})  { print PLOT "set mztics $Parameters->{mztics}\n" }
+	
+	if ($Parameters->{xrange})  { print PLOT "set xrange [$Parameters->{xrange}]\n" }
+	if ($Parameters->{yrange})  { print PLOT "set yrange [$Parameters->{yrange}]\n" }
+	if ($Parameters->{zrange})  { print PLOT "set zrange [$Parameters->{zrange}]\n" }
+	
+	if ($Parameters->{title})   { print PLOT "set title \"$Parameters->{title}\"\n" }
+	
+	print PLOT "show label\n";
+	
+	if ($Parameters->{xlabel})  { print PLOT "set xlabel $Parameters->{xlabel}\n"     }
+	if ($Parameters->{ylabel})  { print PLOT "set ylabel $Parameters->{ylabel}\n\n"   }
+	if ($Parameters->{zlabel})  { print PLOT "set zlabel $Parameters->{zlabel}\n\n"   }
+	
+	if ($Parameters->{NoKey})   { print PLOT "unset key\n"                            }
+	                     else   { print PLOT "set key $Parameters->{KeyStyle}\n"      }
+	
+	if (not $Parameters->{splot}) { print PLOT "\nplot "  }
+	                         else { print PLOT "\nsplot " }
+	
+	# If -ls was given, look through the list to see whether one was marked with an asterisk
+	# to set it as default.
+	if (defined $Parameters->{ls}) {
+		foreach ( @{$Parameters->{ls}} ) {
+			if ($_ =~ m/\*/) {
+				if ($Parameters->{LineStyle}) {
+					print STDERR "\nERROR: Only one line style can be set to be default.\n\n";
+					exit 30;
+				}
+				
+				$Parameters->{LineStyle} = $_;
+				$Parameters->{LineStyle} =~ s/\*//g;
+				$_ =~ s/\*//g;
+			}
+		}
+	}
+	
+	$Counter = 0;
+	
+	if    ($Parameters->{unique})    { $Smooth = "smooth unique"    }
+	elsif ($Parameters->{bezier})    { $Smooth = "smooth bezier"    }
+	elsif ($Parameters->{sbezier})   { $Smooth = "smooth sbezier"   }
+	elsif ($Parameters->{csplines})  { $Smooth = "smooth csplines"  }
+	elsif ($Parameters->{acsplines}) { $Smooth = "smooth acsplines" }
+	                            else { $Smooth = ""                 }
+	
+	$FileNameLength = 0;
+	$TitleLength    = 0;
+	
+	# determine the greatest length of filenames and keys for a nice format of the plot command
+	foreach $File ( @{$Parameters->{AllFiles}} ) {
+		$CurBaseName = GetBaseName ($File);
+		
+		++$CurLineStyle;
+		
+		if ($CurBaseName =~ m/\//) { # if a slash is contained
+			# take only the filename after the last slash till the end
+			$CurBaseName = substr ($CurBaseName, rindex ($CurBaseName, "/")+1);
+		}
+		# check whether a key was defined for this spectrum, otherwise take the base name
+		
+		if ( (defined $Parameters->{Keys}) and (defined $Parameters->{Keys}[$Counter]) ) {
+			$Title = $Parameters->{Keys}[$Counter];
+		}
+		else {
+			$Title = $CurBaseName;
+		}
+		
+		if (length $File  > $FileNameLength) { $FileNameLength = length $File  }
+		if (length $Title > $TitleLength   ) { $TitleLength    = length $Title }
+		
+		++$Counter;
+	}
+	
+	# Later an quotes will be added around the filename and title, the length is therefore increased by 2
+	$FileNameLength = $FileNameLength + 2;
+	$TitleLength    = $TitleLength + 2;
+	
+	$Counter = 0;
+	$CurLineStyle = 0;
+	
+	foreach $File ( @{$Parameters->{AllFiles}} ) {
+		$CurBaseName = GetBaseName ($File);
+		
+		++$CurLineStyle;
+		
+		if ($CurBaseName =~ m/\//) { # if a slash is contained
+			# take only the filename after the last slash till the end
+			$CurBaseName = substr ($CurBaseName, rindex ($CurBaseName, "/")+1);
+		}
+		
+		# after the end of the list of available line styles was reached, rewind
+		# and start at line style one again
+		if ($CurLineStyle > $#LineStyles) { $CurLineStyle = 1 }
+		
+		# if it is not the first file, add a comma and five blanks to indent under "plot"
+		if ($Counter) { print PLOT ", \\\n     " }
+		
+		# check whether a "using" directive was given for this graph
+		if    ($Parameters->{using}[$Counter]) { $Using = "using $Parameters->{using}[$Counter]" } # definition for this very graph
+		                                 else  { $Using = ""                                     } # empty string otherwise
+		
+		# check whether a line style was defined for this spectrum
+		# or if a default line style was set
+		if ( (defined $Parameters->{ls} and defined $Parameters->{ls}[$Counter]) or $Parameters->{LineStyle}) {
+			$i = $Parameters->{ls}[$Counter]; # the number of the line style
+			
+			# if $i is not defined, then the respective array element was empty, thus the "or" branch
+			# of the if condition was used to get here and a default style was set
+			if (not defined $i) { $i = $Parameters->{LineStyle} }
+			
+			$LineStyle = "ls $i";
+			
+			if ( ($LineStyles[$i-1] =~ m/pt /) and ($Parameters->{GraphType} !~ m/impulses|dots|points/) ) {
+				$LineStyle = "linespoints ls $i";
+			}
+			else {
+				$LineStyle = "$Parameters->{ThisGraphType}[$Counter] ls $i";
+			}
+		}
+		else { # if the user defined no specific line style for this graph, take the next one according to the counter
+			if ( ($LineStyles[$CurLineStyle-1] =~ m/pt /) and ($Parameters->{GraphType} !~ m/impulses|dots|points/) ) {
+				$LineStyle = sprintf "linespoints ls %2s", $CurLineStyle;
+			}
+			else {
+				$LineStyle = sprintf "$Parameters->{ThisGraphType}[$Counter] ls %2s", $CurLineStyle;
+			}
+		}
+		
+		# check whether a key was defined for this spectrum, otherwise take the base name
+		if ( (defined $Parameters->{Keys}) and (defined $Parameters->{Keys}[$Counter]) ) {
+			$Title = $Parameters->{Keys}[$Counter];
+		}
+		else {
+			$Title = $CurBaseName;
+		}
+		
+		# Check whether only every xth point shall be plotted of the current file. This is necessary if
+		# linespoints are used and the spectrum comprised too many points, e.g. every 0.1 nm. In that case
+		# a cross or similar tick is plotted at every point, leading to a thick curve. The every command
+		# plots only every nth point of the graph, however, for this script the meaning is changed from
+		# "every nth point" to "every nth nm"
+		if ($LineStyle =~ m/linespoints/) { $Every = &GetEvery ($File, $Parameters->{xrange}, $Parameters->{using}[$Counter]) }
+		                             else { $Every = ""                                                                       }
+		
+		# Add quotes around the filename and the title/key and format them with the respective
+		# respective column width so that the command file is nicely formatted.
+		# Taking into account lines/linespoints/dots etc. would overdo it slightly
+		$File  = sprintf "%-${FileNameLength}s", "\"$File\"";
+		$Title = sprintf "%-${TitleLength}s", "\"$Title\"";
+		
+		printf PLOT "$File $Using $Every $Smooth title $Title with $LineStyle ";
+		
+		++$Counter;
+	}
+	
+	print PLOT "\n\n$Comment" . "pause -1\n";
+	
+	close PLOT;
+} # of sub CreateCommandFile
+
+
+####################################################################################################
+####################################################################################################
+
+
+sub ChangePostscriptDashlength { # changes the dash length parameter directly in the postscript file
+	my $PS = shift;
+	
+	my (@Content, @Fields, $Line);
+	
+	open FILE, "<$PS" or die "\nERROR: Could not open $PS: $!";
+	@Content = <FILE>;
+	close FILE;
+	
+	open FILE, ">$PS" or die "\nERROR: Could not write $PS: $!";
+	
+	# if -d was given
+	if ($Options->{d}) {
+		# fast forward to the line starting with /Dashlength
+		until (not @Content or $Content[0] =~ m!^/Dashlength !) {
+			$Line = shift @Content;
+			print FILE $Line;
+		}
+		
+		# if the end of the file is not reached, add the new length
+		if (@Content) {
+			$Line = shift @Content;         # read the /Dashlength line
+			@Fields = split /\s+/, $Line;   # split the lines at multiple spaces
+			$Fields[1] = $Options->{d};     # replace the second field with the user's length value
+			$Line = join " ", @Fields;      # glue it together again with spaces
+			print FILE "$Line\n";           # write it to the file (split has removed the \n)
+		}
+	} # of if ($Options->{d}
+	
+	if ($Options->{dl1}) { &ChangeDashLength (\@Content, 1) }
+	if ($Options->{dl2}) { &ChangeDashLength (\@Content, 2) }
+	
+	# now write the remainder of the file
+	foreach $Line ( @Content ) { print FILE $Line }
+	
+	close FILE;
+} # of sub ChangePostscriptDashlength
+
+
+####################################################################################################
+####################################################################################################
+
+
+sub ChangeDashLength { # changes the dash length parameter directly in the postscript file
+	my $Content = shift;
+	my $Num = shift;
+	
+	my ($Line, @Fields);
+	
+	# fast forward to the line starting with /Dashlength
+	until (not @{$Content} or $Content->[0] =~ m!^/dl$Num !) {
+		$Line = shift @{$Content};
+		print FILE $Line;
+	}
+	
+	$Line = shift @{$Content};  # the "/dlx {" line
+	print FILE $Line;
+	
+	# if the end of the file is not reached, add the new length
+	if (@{$Content}) {
+		$Line = shift @{$Content};          # read the "10.0 Dashlength mul mul" line
+		$Line =~ s/^\s+//;                  # remove leading blanks
+		@Fields = split /\s+/, $Line;       # split the lines at multiple spaces
+		$Fields[0] = $Options->{"dl$Num"};  # replace the first field with the user's length value
+		$Line = join " ", @Fields;          # glue it together again with spaces
+		print FILE "  $Line\n";             # write it to the file (split has removed the \n)
+	}
+} # of sub ChangeDl
+
+
+####################################################################################################
+####################################################################################################
+
+
+sub CheckGridData { # check a file for valid gnuplot grid data (required for PM3D and contours)
+	my $File = shift;
+	
+	my ($Line, @Content, $LineCount, $Dimension, $LastLine, $MaxDimension);
+	
+	if (not -f $File) {
+		print STDERR "\nERROR: File $File not found!\n\n";
+		exit 35;
+	}
+	
+	open FILE, "<$File" or die "\nERROR: Could not open file $File: $!";
+	@Content = <FILE>;
+	close FILE;
+	
+	$LineCount    = 0;
+	$Dimension    = 0;
+	$MaxDimension = 0;   # largest number of lines in the blocks, used for fixing the file
+	
+	foreach $Line ( @Content ) {
+		if ($Line =~ m/^#/) { next }
+		
+		if ($Line ne "\n") {
+			++$LineCount;
+			$LastLine = $Line;
+			next;
+		}
+		else { # if line is a blank line
+			if (not $Dimension) { # if it was the first block
+				$Dimension = $LineCount;
+				$LineCount = 0;
+				next;
+			}
+			else { # if it was not the first block, compare the $LineCount with the previous ones
+				# to determine the largest number of entries per block
+				if ($LineCount > $MaxDimension) { $MaxDimension = $LineCount }
+					
+				if ($LineCount == $Dimension) {
+					# printf "%20d\n", $LineCount;
+					$LineCount = 0;
+					next;
+				}
+				else {
+					return 0;
+				}
+			}
+		}
+	} # of foreach $Line ( @Content )
+	
+	return $MaxDimension;
+} # of sub CheckGridData
+
+
+####################################################################################################
+####################################################################################################
+
+
+sub FixGridData { # tries to fix invalid grid data by duplicating lines in order to create block with the same number of lines for gnuplot
+	my $File         = shift;
+	my $MaxDimension = shift;
+	
+	my ($Line, @Content, $LineCount, $LastLine);
+	
+	if (not -f $File) {
+		print STDERR "\nERROR: File $File not found!\n\n";
+		exit 40;
+	}
+	
+	open FILE, "<$File" or die "\nERROR: Could not open file $File: $!";
+	@Content = <FILE>;
+	close FILE;
+	
+	$LineCount    = 0;
+	
+	open FILE, ">fixed.xyzq" or die "\nERROR: Could not write file fixed.xyzq: $!";
+	
+	foreach $Line ( @Content ) {
+		if ($Line =~ m/^#/) {
+			print FILE $Line;
+			next;
+		}
+		
+		if ($Line ne "\n") {
+			++$LineCount;
+			print FILE $Line;
+			$LastLine = $Line;
+			next;
+		}
+		else { # if line is a blank line
+			if ($LineCount < $MaxDimension) {
+				for ( 1 .. $MaxDimension - $LineCount) { print FILE $LastLine }
+			}
+			
+			# Add the empty line
+			print FILE $Line;
+			$LineCount = 0;
+		}
+		
+	} # of foreach $Line ( @Content )
+	
+	close FILE;
+} # of sub FixGridData
+
+
+####################################################################################################
+####################################################################################################
+
+
+sub CreateGridData { # creates gnuplot grid data by adding empty lines between blocks with the same x, y, or z value
+	my $InFile  = shift;
+	my $Column  = shift;
+	my $OutFile = shift;
+	
+	my (@Content, @Fields, $Line, $OrgLine, $OldValue, @OutData);
+	
+	if (not -f $InFile) {
+		print STDERR "\nERROR: File $InFile not found!\n\n";
+		exit 45;
+	}
+	
+	--$Column; # Perl starts counting at 0, gnuplot at 1, the script is written for gnuplot users
+	
+	# it was already checked for existence of all files before, this "die" should never be reached
+	open FILE, "<$InFile" or die "\nERROR: Could not open $InFile: $!";
+	@Content = <FILE>;
+	close FILE;
+	
+	foreach $Line ( @Content ) {
+		$OrgLine = $Line;              # save the unaltered line
+		$Line =~ s/^\s+//g;            # remove leading blanks
+		
+		# Split it into whitespace separated columns into $Column+2 fields at most
+		# split starts counting at 1 and we need one column more than
+		# the one we're processing
+		@Fields = split /[\t\s]+/, $Line, $Column+2;
+		
+		if ($Line =~ m/^#/) {          # if it is a comment line
+			push @OutData, $OrgLine;     # save it
+			next;                       # and go on to the next line
+		}
+		
+		# if it is an empty line (gnuplot grid data), skip it
+		if ($Line eq "\n" or $Line eq "") { next; }
+		
+		if ($Fields[$Column] =~ m/[^-+.eE\d\s\n]/) {
+			print STDERR "\nERROR: The column contains something else than numbers, +, -, tabs and spaces!\n";
+			print STDERR "Last Line read from the file:\n$OrgLine\n\n";
+			exit 50;
+		}
+		
+		if (scalar @Fields < $Column) {
+			print STDERR "\nERROR: Only ", scalar @Fields, " columns found in file $InFile.\n\n";
+			exit 51;
+		}
+		
+		# if it is the first iteration
+		if (not defined $OldValue) { $OldValue = $Fields[$Column] }
+		
+		# add a newline if the value has changed
+		if ($Fields[$Column] != $OldValue) {
+			push @OutData, "\n";
+			$OldValue = $Fields[$Column];
+		}
+		
+		push @OutData, $OrgLine;
+	}
+	
+	# the content of the outfile is stored in an array to be able to save
+	# it under the same file name as the InFile and not to have the data
+	# twice in memory.
+	# If the data becomes too big, a temporary file would be another possibility
+	
+	open OUTFILE, ">$OutFile" or die "\nERROR: Could not write $OutFile: $!";
+	print OUTFILE join "", @OutData;
+	close OUTFILE;
+	
+	return 1;
+} # of sub CreateGridData
+
+####################################################################################################
+####################################################################################################
+

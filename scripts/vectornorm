@@ -1,0 +1,35 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    vectornorm
+#
+# Function:   Calculates the norm of a vector
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 4546 $, $Date: 2009-06-06 07:47:46 +0100 (Sat, 06 Jun 2009) $
+#
+# Date:       June 2009
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use VectorMath;                      # for vector calculations
+
+my $Vector;
+
+if ($#ARGV != 2) {
+	print STDERR "\nUsage:   vectornorm  x y z\n\n";
+	exit 1;
+}
+
+$Vector = {x => $ARGV[0], y => $ARGV[1], z => $ARGV[2]};
+
+printf "\nNorm = %12.6f\n\n", Norm ($Vector);
+

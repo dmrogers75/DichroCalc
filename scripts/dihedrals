@@ -1,0 +1,284 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    dihedrals
+#
+# Function:   Prints out the dihedral angles of a given PDB
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3917 $, $Date: 2009-02-12 02:12:23 +0000 (Thu, 12 Feb 2009) $
+#
+# Date:       June 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use ParsePDB;                        # to handle PDB files
+use VectorMath;                      # for vector calculations
+use GetParameters;                   # to handle command line parameters
+
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {     # create an anonymous hash
+   cc   => "switch",
+	i    => "switch",
+	v    => "switch",
+};
+
+my $Options = {};     # create an anonymous hash
+
+my $Help = "\n" .
+"Usage:   dihedrals file.pdb [-cc] [-i] [-v]\n" .
+"\n" .
+"    -cc   display chain changes\n" .
+"    -i    ignore angles, which could not be calculated (otherwise 360 is printed)\n" .
+"    -v    verbose mode (prints which atoms were not found to calculate the angle)\n" .
+"\n" .
+"    Dihedral angle definitions:\n" .
+"      phi   =  C   N   CA  C\n" .
+"      psi   =  N   CA  C   N\n" .
+"      chi1  =  N   CA  CB  CG\n" .
+"      chi2  =  CA  CB  CG  CD\n" .
+"      omega =  CA  C   N   CA\n" . 
+"\n" .
+"    In some amino acids, CB, CD and CG are numbered like e.g. CD1 and CD2.\n" .
+"    In such cases the atom with the lowest number (e.g. CD1) is taken to\n" .
+"    calculate the angle.\n" .
+"\n";
+
+####################################################################################################
+
+my ($File, $PDB, @ResidueIndex, @Chains, $Chain, $ChainLabel, $Residue, $Label, $NoAngle, @Atoms);
+my (@CAC, @NCA, $Chi1, $Chi2, $Omega);
+
+GetParameters ($Parameters, $Options, $Help);
+
+if (not $Options->{rest}) {
+	print STDERR "\nERROR: No input files given.\n\n";
+	exit 1;
+}
+
+if ($Options->{i}) { $NoAngle = ""       }
+              else { $NoAngle = "360.00" }
+
+foreach $File ( @{$Options->{rest}} ) {
+	# create a new object
+	$PDB = ParsePDB->new (FileName => $File, NoHETATM => 1, NoANISIG => 1, AtomLocations => "First");
+	
+	# parse the file content and split it up into subgroups
+	$PDB->Parse;
+	
+	$File =~ s/\.pdb$//;
+	print "\n$File\n";
+	for (1 .. length $File) { print "-" }
+	print "\n\n";
+	
+	print "      Nr    Res      Phi        Psi        Chi1       Chi2      Omega\n";
+	
+	$PDB->GetAngles;
+	
+	@Chains = $PDB->IdentifyChains (Model => 0);
+	
+	foreach $Chain ( @Chains ) {
+		$ChainLabel = $PDB->GetChainLabel (Model => 0, Chain => $Chain);
+		
+		if ($Options->{cc}) {
+			print "\nChain $Chain, chain label $ChainLabel:\n\n";
+		}
+		
+		@ResidueIndex = $PDB->Get (Model => 0, Chain => $Chain, ResidueIndex => 1, OneLetterCode => 1);
+		
+		@CAC = undef;
+		@NCA = undef;
+		
+		foreach $Residue ( @ResidueIndex ) {
+			################################################################################
+			# chi1 angles
+			################################################################################
+
+			# No chi angles: ALA GLY SER
+
+			# run over all residues whose chi1 angle is defined N CA CB CG
+			foreach $Label ( qw/ARG ASN ASP GLU GLN HIS LEU LYS MET PHE PRO TRP TYR/ ) {
+				
+				# check whether the curret residue matches this label
+				if ($Residue->{ResidueLabel} eq $Label) {
+
+					# retrieve the atom hashes, those will be saved in @Atoms, the return value
+					# is true, if all searched atoms were found
+					if ( &GetAtoms ($Residue, [qw/N CA CB CG/], \@Atoms) ) {
+
+						# calculate the needed dihedral angle
+						$Residue->{Chi1} = DihedralAngle ( @Atoms );
+					}
+
+					# leave the loop, as only one label can match the residue...
+					last;
+				}
+			}
+
+			foreach $Label ( qw/CYS/ ) {
+				if ($Residue->{ResidueLabel} eq $Label) {
+					if ( &GetAtoms ($Residue, [qw/N CA CB SG/], \@Atoms) ) {
+						$Residue->{Chi1} = DihedralAngle ( @Atoms );
+					}
+					last;
+				}
+			}
+
+			foreach $Label ( qw/ILE VAL/ ) {
+				if ($Residue->{ResidueLabel} eq $Label) {
+					if ( &GetAtoms ($Residue, [qw/N CA CB CG1/], \@Atoms) ) {
+						$Residue->{Chi1} = DihedralAngle ( @Atoms );
+					}
+					last;
+				}
+			}
+
+			foreach $Label ( qw/THR/ ) {
+				if ($Residue->{ResidueLabel} eq $Label) {
+					if ( &GetAtoms ($Residue, [qw/N CA CB CG2/], \@Atoms) ) {
+						$Residue->{Chi1} = DihedralAngle ( @Atoms );
+					}
+					last;
+				}
+			}
+
+			################################################################################
+			# chi2 angles
+			################################################################################
+
+			# ASN: chi2 could either be OD1 or ND2...?
+			# ASP: chi2 could either be OD1 or OD2...?
+			# No chi2 angle: ALA GLY CYS SER THR VAL
+
+			# determine chi2 angle
+			foreach $Label ( qw/ARG GLU GLN LYS PRO/ ) {
+				if ($Residue->{ResidueLabel} eq $Label) {
+					if ( &GetAtoms ($Residue, [qw/CA CB CG CD/], \@Atoms) ) {
+						$Residue->{Chi2} = DihedralAngle ( @Atoms );
+					}
+					last;
+				}
+			}
+			
+			foreach $Label ( qw/LEU PHE TRP TYR/ ) {
+				if ($Residue->{ResidueLabel} eq $Label) {
+					if ( &GetAtoms ($Residue, [qw/CA CB CG CD1/], \@Atoms) ) {
+						$Residue->{Chi2} = DihedralAngle ( @Atoms );
+					}
+					last;
+				}
+			}
+			
+			foreach $Label ( qw/HIS/ ) {
+				if ($Residue->{ResidueLabel} eq $Label) {
+					if ( &GetAtoms ($Residue, [qw/CA CB CG CD2/], \@Atoms) ) {
+						$Residue->{Chi2} = DihedralAngle ( @Atoms );
+					}
+					last;
+				}
+			}
+			
+			foreach $Label ( qw/ILE/ ) {
+				if ($Residue->{ResidueLabel} eq $Label) {
+					if ( &GetAtoms ($Residue, [qw/CA CB CG1 CD1/], \@Atoms ) ) {
+						$Residue->{Chi2} = DihedralAngle ( @Atoms );
+					}
+					last;
+				}
+			}
+			
+			foreach $Label ( qw/MET/ ) {
+				if ($Residue->{ResidueLabel} eq $Label) {
+					if ( &GetAtoms ($Residue, [qw/CA CB CG SD/], \@Atoms) ) {
+						$Residue->{Chi2} = DihedralAngle ( @Atoms );
+					}
+					last;
+				}
+			}
+			
+			################################################################################
+
+			if (not @CAC) {
+				&GetAtoms ($Residue, [qw/CA C/], \@CAC);
+			}
+			else{
+				&GetAtoms ($Residue, [qw/N CA/], \@NCA);
+				
+				if (scalar @CAC != 2 or scalar @NCA != 2) {
+					&GetAtoms ($Residue, [qw/CA C/], \@CAC);
+					$Residue->{Omega} = undef;
+				}
+				else {
+					$Residue->{Omega} = DihedralAngle ( @CAC, @NCA );
+					
+					# save the CA and C atoms for the next residue
+					&GetAtoms ($Residue, [qw/CA C/], \@CAC);
+				}
+			}
+			
+			printf "   %5d    %3s  ",
+				$Residue->{ResidueNumber},
+				$Residue->{ResidueLabel};
+			
+			if (defined $Residue->{Phi}) { printf "%9.2f  ", $Residue->{Phi} }
+			                        else { printf "%9s  ", $NoAngle             }
+			
+			if (defined $Residue->{Psi}) { printf "%9.2f  ", $Residue->{Psi} }
+			                        else { printf "%9s  ", $NoAngle             }
+			
+			if (defined $Residue->{Chi1}) { printf "%9.2f  ", $Residue->{Chi1} }
+			                         else { printf "%9s  ", $NoAngle              }
+			
+			if (defined $Residue->{Chi2}) { printf "%9.2f  ", $Residue->{Chi2} }
+			                         else { printf "%9s  ", $NoAngle              }
+			
+			if (defined $Residue->{Omega}) { printf "%9.2f  ", $Residue->{Omega} }
+			                          else { printf "%9s  ", $NoAngle               }
+			
+			print "\n";
+		}
+	} # of foreach $Chain ( @Chains )
+	
+	print "\n";
+} # of foreach $File ( @{$Options->{rest}} )
+
+
+sub GetAtoms { # find atoms with the given labels in a residue
+	my $Residue = shift;
+	my $Labels  = shift;
+	my $Atoms   = shift;
+	my ($Found, $Atom, $Label);
+
+	# Empty the $Atoms array
+	@{$Atoms} = ();
+	
+	foreach $Label ( @{$Labels} ) {
+		$Found = 0;
+		
+		foreach $Atom ( @{$Residue->{Atoms}} ) {
+			if ($Atom->{AtomType} eq $Label) {
+				push @{$Atoms}, $Atom;
+				$Found = 1;
+			}
+		}
+		
+		if (not $Found and $Options->{v}) {
+			print "            WARNING: atom $Label not found in residue $Residue->{ResidueNumber}\n";
+		}
+	}
+	
+	if (scalar @{$Atoms} == scalar @{$Labels}) { return 1 }
+	                                      else { return 0 }
+} # of sub GetAtoms

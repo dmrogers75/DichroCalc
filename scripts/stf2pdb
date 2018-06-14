@@ -1,0 +1,92 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    stf2pdb
+#
+# Function:   Creates a PDB file from the stf and fmt files. This was used for the CASPT2 dimers
+#             for which only these two files were provided but no PDB file
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 2945 $, $Date: 2008-04-28 17:13:10 +0100 (Mon, 28 Apr 2008) $
+#
+# Date:       July 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use ReadMatmac;                      # to read matmac in- and output files
+
+my ($BaseName, $Group, $Atom, $CurType, $AtomCount, $Label);
+
+if (not @ARGV) {
+	print "\nUsage:   stf2pdb basename\n\n";
+	print "         basename.stf and basename.fmt will be used to produce the pdb.\n\n";
+	exit 1;
+}
+
+while (@ARGV) {
+	$BaseName = shift;
+	$BaseName =~ s/\.(stf|fmt|pdb|kor|dbg)$//;
+
+	foreach ( qw/stf fmt/ ) {
+		if (not -f "$BaseName.$_") {
+			print STDERR "\nERROR: $BaseName.$_ not found! Both the stf and fmt files are required.\n\n";
+			exit 2;
+		}
+	}
+
+	my $StfData = {}; # create an anonymous hash
+	my $FmtData = []; # create an ononymous array
+	my $Residue = 1;
+
+	ReadStfFile ($BaseName, $StfData);
+	ReadFmtFile ($BaseName, $FmtData);
+
+	open  PDB, ">$BaseName.pdb" or die "ERROR: Could not open/create $BaseName.pdb: $!";
+
+	$Label = "HEADER $BaseName";
+	until (length $Label == 80) { $Label = $Label . " " }
+	print PDB "$Label\n";
+
+	foreach $Group ( 0 .. $#{$StfData->{Assignments}} ) {
+		$CurType = $StfData->{Types}[$Group];
+
+		# only peptide groups are considered (side chains would need to be implemented separately)
+		if ($StfData->{Names}[$CurType-1] !~ m/NMA4FIT2|NMA99WDY/) { next }
+
+		# to determine, which atom we're currently dealing with (each group is C O N ordered)
+		$AtomCount = 0;
+
+		foreach $Atom ( @{$StfData->{Assignments}[$Group]} ) {
+			++$AtomCount;
+
+			# atom no. 3 is nitrogen, which means the next residue has just begun
+			if    ($AtomCount == 1) { $Label = "C  " }
+			elsif ($AtomCount == 2) { $Label = "O  " }
+			elsif ($AtomCount == 3) {
+				$Label = "N  ";
+				++$Residue;
+			}
+
+			printf PDB "ATOM  %5d %4s NMA A%4d    %8.3f%8.3f%8.3f                          \n",
+					$Atom,
+					$Label,
+					$Residue,
+					$FmtData->[$Atom-1][0],
+					$FmtData->[$Atom-1][1],
+					$FmtData->[$Atom-1][2];
+		}
+	}
+
+	print PDB "TER" . " "x77 . "\n";
+	print PDB "END" . " "x77 . "\n";
+
+	close PDB;
+}

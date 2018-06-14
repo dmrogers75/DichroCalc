@@ -1,0 +1,89 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    differencesprectrum
+#
+# Function:   Calculates the difference spectrum of two spectra. The intensity of the second file
+#             if subtracted from the first one at each wavelength.
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 2945 $, $Date: 2008-04-28 17:13:10 +0100 (Mon, 28 Apr 2008) $
+#
+# Date:       October 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use GetBaseName;                     # to split up a file name
+use ReadSpectrum;                    # to read in xy data
+use GetParameters;                   # to handle command line parameters
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {     # create an anonymous hash
+	o  => "string",
+};
+
+my $Options = {       # create an anonymous hash
+};
+
+my $Help = "\n" .
+"Usage:   differencespectrum spectrum1.cd sectrum2.cd -o outfile\n" .
+"\n";
+
+####################################################################################################
+
+my ($Point1, $Point2, @Spectrum1, @Spectrum2, @DiffSpec, $BaseName, $Extension, $OutFile);
+
+GetParameters ($Parameters, $Options, $Help);
+
+if (not $Options->{rest} or $#{$Options->{rest}} != 1) {
+	print "\nERROR: Exactly two input files are required.\n\n";
+	exit 1;
+}
+
+@Spectrum1 = ReadSpectrum ($Options->{rest}[0]);
+@Spectrum2 = ReadSpectrum ($Options->{rest}[1]);
+
+foreach $Point1 ( @Spectrum1 ) {
+	foreach $Point2 ( @Spectrum2 ) {
+		# run loop until the x value 1 is smaller or equal as x value 2
+		if ($Point1->[0] > $Point2->[0]) { next }
+		else {
+			# Debug check
+			# printf "%8.3f  %8.3f\n", $Point1->[0], $Point2->[0];
+			push @DiffSpec, [$Point1->[0], $Point1->[1] - $Point2->[1]];
+			last;
+		}
+	}
+}
+
+# to have the extension and the base name, if needed
+($BaseName, $Extension) = SplitFileName ($Options->{rest}[0]);
+
+if (not $Options->{o}) {
+	# take the file name of the first file
+	$OutFile = $BaseName . ".diff." . $Extension;
+}
+else {
+	$OutFile = $Options->{o};
+	# add the extension, if it wasn't there already
+	if ($OutFile !~ m/\.$Extension$/) { $OutFile = $OutFile . ".$Extension" }
+}
+
+open FILE, ">$OutFile" or die "ERROR: Could not write to $OutFile: $!";
+
+foreach $Point1 ( @DiffSpec ) {
+	printf FILE "%14.6f%14.6f\n", $Point1->[0], $Point1->[1];
+}
+
+close FILE;

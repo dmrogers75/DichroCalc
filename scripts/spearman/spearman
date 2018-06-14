@@ -1,0 +1,287 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+# 
+# Program:    spearman
+#
+# Function:   Calculates the Spearman rank correlation of all calculated and experimental spectra 
+#             for each wavelength.
+#             Output is an xy data file with a certain correlation coefficient for each of the
+#             requested wavelengths, e.g.
+#
+#             190     0.88
+#             191     0.89
+#             192     0.85
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3912 $, $Date: 2009-02-12 02:09:36 +0000 (Thu, 12 Feb 2009) $
+#
+# Date:       July 2006 
+#
+#
+# Hash structure:
+#
+# %Data
+#   |
+#   |- 190  first observed wavelength
+#   |   |
+#   |   |- 21384  intensity of file 1
+#   |   |- 39930  intensity of file 2
+#   |   |
+#   |  etc.
+#   |
+#   |- 191  second observed wavelength
+#   |   |
+#  etc.
+#
+####################################################################################################
+
+use strict;                         # always use this!!!
+use Data::Dumper;                   # to easily print out arrays and hashes
+use lib "$ENV{HOME}/bin/perllib";   # add ~/bin/perllib to the library path
+use DebugPrint;                     # handy during debugging
+use GetBaseName;                    # to split a filename into base name and extension
+use GetParameters;                  # to parse the commend line parameters
+use Statistics::RankCorrelation;    # to calculate the Spearman rank
+use ReadSpectrum;                   # to read in the spectra
+
+$Data::Dumper::Sortkeys = 1;        # sort the hash keys of the Dumper output
+
+
+####################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my @DefaultWavelengths = (190 .. 230);
+
+my $Parameters = {           # defines all possible parameters
+   o  =>  "string",          # the filename of the output file
+   e  =>  "list",            # defines experimental data
+   c  =>  "list",            # defines calculated data
+   w  =>  "list",            # defines the wavelangths to be calculated
+};
+
+my $Options = {                # holds default values and (after parsing) the given parameters
+   o  =>  "spearman.xy",
+};
+
+my $Help = "\n" .              # displayed when an error was found or -h was given
+  "Usage:   spearman [file list] [-w 190..210] [-o Outfile]\n" .
+  "         This will read all given files and search for files with the same\n" .
+  "         base name and .exp.cd extension.\n\n" .
+
+  "   or:   spearman -e (experimental files) -c (calculated files) [-w 190..210]\n" .
+  "         spearman -e *.exp.cd -c *.nma.cd -o spearman.nma.xy\n\n" . 
+  "         Default outfile name: $Options->{o}\n\n" .
+
+  "         The wavelengths are by default 190 .. 230, this can be changed via\n" .
+  "         the -w switch:\n" .
+  "         -w 190..210      range from 190 to 210\n" .
+  "         -w 190 200 220   the wavelengths 190 200 and 220\n" .
+  "         -w 190..200 220  range from 190 to 210 and 220\n" .
+  "\n\n";
+
+####################################################################################################
+
+my ($File, %DataCal, %DataExp, $Content, $BaseName, $i);
+my (@Wavelengths, @CalFiles, @ExpFiles, @CalData, @ExpData, @Output);
+my ($LargestMin, $SmallestMax);
+
+# parse the given parameters
+GetParameters ($Parameters, $Options, $Help);
+
+# check if -c or -e is given solely
+if (   ((defined $Options->{e}) and (not defined $Options->{c}))     # -e given without -c
+	 or ((not defined $Options->{e}) and (defined $Options->{c})) ) { # -c given without -e
+	print STDERR "\nERROR: both -c and -e have to be defined if giving one of them\n\n";
+	exit 1;
+}
+
+# if both -c and -e are given
+if (defined $Options->{c} and defined $Options->{e}) {
+	# then check if any excessive parameters have been given
+	if (defined $Options->{rest}) {
+		print STDERR "\nERROR: The following parameters could not be interpreted:\n\n";
+		print STDERR join ("\n", @{$Options->{rest}});
+		print STDERR "\n\n";
+		exit 3;
+	}
+	else {
+		@CalFiles = @{$Options->{c}};
+		@ExpFiles = @{$Options->{e}};
+	}
+}
+
+# Determine the wavelengths for which the correlation is to be calculated
+if (not defined $Options->{w}) { @Wavelengths = @DefaultWavelengths }
+else { # if the user has defined wavelengths
+	foreach $i (0 .. $#{$Options->{w}} ) {
+
+		if ($Options->{w}->[$i] =~ m/^[\d]+$/) { # if it is entirely a number
+			push @Wavelengths, $Options->{w}->[$i];
+		}
+		elsif ($Options->{w}->[$i] =~ m/^\.\.$/) { # if it is ".."
+			push @Wavelengths, ($Options->{w}->[$i-1]+1 .. $Options->{w}->[$i+1]-1);
+		}
+		elsif ($Options->{w}->[$i] =~ m/^([\d]+)\.\.([\d]+)$/) { # if it is e.g. "190..210"
+			my $From = $1;  # first backreference of the last regex
+			my $To   = $2;  # second backreference of the last regex
+			
+			push @Wavelengths, ($From .. $To);
+		}
+		else {
+			print STDERR "\nERROR: Value ", $Options->{w}->[$i], " could not be interpreted.\n\n";
+			exit 4;
+		}
+	}
+}
+
+# if $Options->{rest} is defined, it means that something like *.cd was specified and that
+# it has to be determined what is experimental and what is calculated 
+if (defined $Options->{rest}) {
+	foreach $File ( @{$Options->{rest}} ) {
+		if ($File =~ m/\.exp\.cd$/) { push @ExpFiles, $File } # if extension is .exp.cd
+		                       else { push @CalFiles, $File } # else regard it as calculated
+	}
+
+	# if calculated but no experimental spectra were found, it is assumed that something like 
+	# *.nma.cd was given and for each file 1beb.nma.cd a respective 1beb.exp.cd exists
+	if ( (scalar @CalFiles > 0) and (scalar @ExpFiles == 0) ) {
+		foreach $File (@CalFiles) {
+			$BaseName = GetBaseName ($File);      # removes .cd
+			$BaseName = GetBaseName ($BaseName);  # remove .nma, .wdy and the like
+
+			if (-f "$BaseName.exp.cd") {
+				push @ExpFiles, "$BaseName.exp.cd";
+			}
+			else {
+				print STDERR "\nERROR: For file $File no experimental could be found!\n\n";
+				exit 6;
+			}
+		}
+	}
+} # of if (defined $Options->{rest})
+
+# check if number of calculated spectra matches the one of experimental spectra
+if ( scalar @CalFiles != scalar @ExpFiles) {
+	print STDERR "\nERROR: Number of calculated files (", scalar @CalFiles, ") does not match\n";
+	print STDERR "       number of files experimental files (", scalar @ExpFiles, ")!\n\n";
+	exit 2;
+}
+
+
+####################################################################################################
+# check whether the minimum and maximum wavelength are really in the present files
+# (ranking gets bad if the spectrum starts at 190 and the rank is calculated from 180 nm)
+####################################################################################################
+
+$LargestMin  = 0;
+$SmallestMax = 1000;
+
+print "\nChecking available wavelengths...\n";
+
+foreach $File (@CalFiles) {
+	# this returns an array with the spectrum data, starting at the lowest wavelength
+	# $Content[$i]->[0] contains the wavelength
+	# $Content[$i]->[1] contains the intensity
+	my @Content = ReadSpectrum ($File);
+
+	if ($Content[0]->[0] > $LargestMin)          { $LargestMin  = $Content[0]->[0]         }
+	if ($Content[$#Content]->[0] < $SmallestMax) { $SmallestMax = $Content[$#Content]->[0] }
+	
+	# save the read spectrum so that it doesn't need to be read again
+	push @CalData, \@Content;
+}
+
+foreach $File (@ExpFiles) {
+	# this returns an array with the spectrum data, starting at the lowest wavelength
+	# $Content[$i]->[0] contains the wavelength
+	# $Content[$i]->[1] contains the intensity
+	my @Content = ReadSpectrum ($File);
+	
+	if ($Content[0]->[0] > $LargestMin)          { $LargestMin  = $Content[0]->[0]         }
+	if ($Content[$#Content]->[0] < $SmallestMax) { $SmallestMax = $Content[$#Content]->[0] }
+	
+	# save the read spectrum so that it doesn't need to be read again
+	push @ExpData, \@Content;
+}
+
+if ($LargestMin > $Wavelengths[0] or $SmallestMax < $Wavelengths[$#Wavelengths]) {
+	print STDERR "\nERROR: Requested range not available in the files!\n";
+	print STDERR "       Minimum wavelength:  $LargestMin\n";
+	print STDERR "       Maximum wavelength:  $SmallestMax\n\n";
+	exit 3;
+}
+
+
+####################################################################################################
+
+print "Processing calculated files...\n";
+
+foreach $Content ( @CalData ) {
+	&GetIntensities ($Content, \@Wavelengths, \%DataCal);
+}
+
+print "Processing experimental files...\n";
+
+foreach $Content ( @ExpData ) {
+	&GetIntensities ($Content, \@Wavelengths, \%DataExp);
+}
+
+print "\n\n";
+
+@Output = &GetSpearman (\%DataCal, \%DataExp);
+
+open OUTFILE, ">$Options->{o}";
+print OUTFILE @Output;
+close OUTFILE;
+
+
+####################################################################################################
+# SUBROUTINES
+####################################################################################################
+
+
+sub GetIntensities { # read in the intensities for each wavelength of experiment and calculation
+	my $Content        = shift;
+	my $Wavelengths = shift;
+	my $Data        = shift;
+	my ($Wavelength, $i);
+	
+	# the wavelengths are in ascending order, therefore it is sufficient to start 
+	# only once at the beginning of @Content
+	$i = 0;
+	
+	foreach $Wavelength ( @{$Wavelengths} ) {
+		# $Content[$i]->[0] contains the wavelength
+		# $Content[$i]->[1] contains the intensity
+		
+		# look for a wavelength which is equal to the searched one 
+		# or take the very next bigger one
+		while ( ($i < $#{$Content}) and ($Content->[$i][0] != $Wavelength) ) { ++$i }
+		
+		if ( (not defined $Content->[$i][0]) or (not defined $Content->[$i][1]) ) {
+			print STDERR "\nERROR: In file $File the wavelength $Wavelength could not be found\n\n";
+			exit 5;
+		}
+		
+		push @{$Data->{$Wavelength}}, $Content->[$i][1];
+	}
+} # of sub GetIntensities
+
+
+sub GetSpearman { # calculate the rank correlation
+	my $Data1 = shift;
+	my $Data2 = shift;
+	my ($Wavelength, $Stat);
+	my @Output;
+	
+	foreach $Wavelength ( sort keys %{$Data1} ) {
+		$Stat = Statistics::RankCorrelation->new ($Data1->{$Wavelength}, $Data2->{$Wavelength});
+		push @Output, $Wavelength . "\t" . $Stat->spearman . "\n";
+	}
+	
+	return @Output;
+} # of sub GetSpearman
+

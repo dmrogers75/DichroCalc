@@ -1,0 +1,871 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    bandshape
+#
+# Function:   Superimposes line spectra with band functions. Parameters can be given by command line
+#             and are read from the respective stf file. Apart from the perl routine, it can also
+#             make use of ashape to calculate the curves (which is of course faster). The ashape.dat
+#             is produced for each file in that case.
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3873 $, $Date: 2009-02-11 18:30:00 +0000 (Wed, 11 Feb 2009) $
+#
+# Date:       September 2006
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use GetParameters;                   # to parse the command line parameters
+use ReadSpectrum;                    # to read xy data
+use GetBaseName;                     # to split a filename into base name and extension
+use ReadMatmac;                      # to parse matmac input and output files
+use DebugPrint;                      # handy during debugging
+use VectorMath;                      # for vector calculations
+use ParsePDB;                        # to parse PDB files
+
+
+####################################################################################################
+# Default Values
+####################################################################################################
+
+my $DefaultMin = 150;                # minimum wavelength
+my $DefaultMax = 350;                # maximum wavelength
+my $DefaultCurveType = 3;            # 3 = Gaussian curve, 2 = approx. Lorentzian, 1 = Lorentzian
+my $DefaultInterval  = 0.1;          # interval of calculated wavelengths
+my $DefaultBandwidth = 12.5 ;         # currently only one halfwidth is supported
+
+my $DefaultUseAshape = 0;            # use ashape instead of calculating via sub Bandshape
+
+####################################################################################################
+# Configuration of the parameters
+####################################################################################################
+
+my $Parameters = {
+	ashape  => "switch",         # use ashape instead of the perl routine
+	plot    => "switch",         # plot the file afterwards
+	all     => "switch",         # glob for *.cdl, *.abl and *.vec
+	g       => "switch",         # Gaussian shape
+	l       => "switch",         # Lorentzian shape
+	al      => "switch",         # approximate Lorentzian shape
+	s       => "string",         # scale factor
+	w       => "string",         # half width
+	i       => "string",         # interval
+	x       => "reallist[1,2]",  # range
+	silent  => "switch",         # to suppress output to STDOUT
+	ab      => "switch",         # keep the absorbance spectra
+	abl     => "switch",         # keep the absorbance line spectra
+	ext     => "switch",         # to create the .ext?d file
+	sc      => "list[0,1]",      # use only a single chain for the scale factor (for big PDBs)
+	force   => "switch",         # force to produce the spectrum, even with negative wavelengths
+	xyz     => "switch",         # create absorbance spectra for each direction
+	
+	ld      => "switch",         # calculate the plain LD
+	dr      => "switch",         # calculate the dichroic ratio
+	ldr     => "switch",         # calculate the reduced LD
+};
+
+my $Options = {
+	g       => 0,                # those parameters are tested via addition
+	l       => 0,                # very early on, hence they are set to zero
+	al      => 0,                # by default to avoid error messages
+};
+
+my $Help =
+"\n" .
+"Usage:   bandshape file1 [file2] [...]\n" .
+"                   [-plot] [all] [ashape] [-silent] [-ext] [-force]\n" .
+"                   [-s 200] [-sc] [-x $DefaultMin $DefaultMax] [-w $DefaultBandwidth]\n" .
+"                   [-i 0.1] [-g|l|al]\n" .
+"\n" .
+"file      a .cdl, .abl or .vec file, the extension can be omitted\n" .
+"          if no extension is given, all file types will be processed\n" .
+"all       process *.cdl, *.abl and *.vec in the current directory\n" .
+"plot      plot the files using plotspectrum\n" .
+"ashape    use ashape instead of the Perl routine\n" .
+"silent    suppress output to STDOUT\n" .
+"ext       create the .ext?d file with the extreme values\n" .
+"force     force to create the spectrum, even when negative wavelengths are found\n" .
+"\n" .
+"ab        do not delete the intermediate absorbance spectra\n" .
+"abl       do not delete the intermediate absorbance line spectra\n" .
+"xyz       do not delete the absorbance spectra for each direction\n" .
+"\n" .
+"ld        calculate the plain LD (default if no other method is selected)\n" .
+"dr        calculate the dichroic ratio\n" .
+"ldr       calculate the reduced LD\n" .
+"\n" .
+"s         mandatory scale factor (number of chromophores in the protein)\n" .
+"          must be defined in ashape.dat, the PDB file or via -s\n" .
+"sc        needed if the scale factor is to be determined from the pdb, but only\n" .
+"          one chain was used to calculate the spectrum (if the protein is too big)\n" .
+"          If only one chain is used but the number of residues of the whole PDB,\n" .
+"          the intensity becomes too small.\n" .
+"x         range of the spectrum, default is $DefaultMin $DefaultMax\n" .
+"w         half width, default value is $DefaultBandwidth\n" .
+"i         interval of the wavelength, default is $DefaultInterval\n\n" .
+"g|l|al    defines the curve type used to create the spectra. If omitted, then\n" .
+"          Gaussian shapes are taken by default\n" .
+"          g  = Gaussian shape\n" .
+"          l  = Lorentzian shape\n" .
+"          al = approximate Lorentzian shape\n\n" .
+
+"Parameters given by command line override the ones read from the stf file.\n" .
+"\n" .
+"Default values:\n" .
+"        Minimum wavelength:   $DefaultMin\n" .
+"        Maximum wavelength:   $DefaultMax\n" .
+"        Curve type:           $DefaultCurveType\n" .
+"        Interval:             $DefaultInterval\n" .
+"        Bandwidth:            $DefaultBandwidth\n" .
+"\n\n";
+
+####################################################################################################
+
+my $StfData   = {};  # create an anonymous hash
+
+my (@AllFiles, $File, $BaseName, $Extension, $OK, @Spectrum, $OutFile, $i);
+
+# parse the command line parameters and save them to $Options
+GetParameters ($Parameters, $Options, $Help);
+
+if ($Options->{g} + $Options->{l} + $Options->{al} > 1) { # if more than one type was given
+	print STDERR "ERROR: Only one curve type may be defined!\n\n";
+	exit 101;
+}
+
+if (not defined $Options->{ashape}) { $Options->{ashape} = $DefaultUseAshape  }
+
+if ($Options->{all}) { @{$Options->{rest}} = glob "*.cdl *.vec" }
+
+if ( (not defined $Options->{rest}) or (scalar @{$Options->{rest}} < 1) ) {
+	print STDERR "ERROR: No file given to process! Use -all to process files automatically.\n\n";
+	exit 102;
+}
+
+# check the given files for existence or add extensions
+foreach $File (@{$Options->{rest}}) {
+	if (not -f $File) {
+		$OK = 0;
+		
+		if (-f "$File.cdl") {
+			push @AllFiles, "$File.cdl";
+			$OK = 1;
+		}
+		
+		if (-f "$File.vec") {
+			push @AllFiles, "$File.vec";
+			$OK = 1;
+		}
+		
+		if (-f "$File.abl") {
+			push @AllFiles, "$File.abl";
+			$OK = 1;
+		}
+		
+		if (not $OK) {
+			print STDERR "ERROR: File $File not found!\n\n";
+			exit 103;
+		}
+	}
+	else { # if the file is found as entered
+		if ($File !~ m/\.(cdl|abl|vec)$/) {
+			print STDERR "\nERROR: File type of $File could not be determined, only .cdl, .abl and .vec files can be processed!\n\n";
+		}
+		else {
+			push @AllFiles, $File;
+		}
+	}
+} # of foreach $File (@{$Options->{rest}})
+
+# $Parameters is now not needed any more and is re-used for the "final" parameters after
+# evaluating the stf-file and the command line parameters
+$Parameters = {};
+
+foreach $File (@AllFiles) {
+	($BaseName, $Extension)  = SplitFileName ($File);
+
+	if (not $Extension) {
+		print STDERR "\nERROR: No extension found for file $File, the file type needs to be .cdl, .abl or .vec.\n\n";
+		next;	
+	}
+	
+	$StfData    = {};   # clear the anonymous hash for each file
+	$Parameters = {};   # clear the anonymous hash for each file
+	
+	if (not $Options->{s}) {
+		&ReadPDB ($BaseName, $Parameters, $Options->{sc});
+	}
+	
+	&ReadStf ($BaseName, $StfData);
+	&CheckParameters ($StfData, $Options, $Parameters);
+	
+	# for CD spectra
+	if ($Extension eq "cdl") {
+		$OutFile = $BaseName . "vib.cd";
+		
+		# if it is a CD spectrum, the .cdl file is directly convoluted
+		if ($Options->{ashape}) {
+			unless ( &RunAshape ($File, $Parameters) ) { next }
+			
+			if (-f "ashape.dat" ) { system "rm ashape.dat" }
+		}
+		else {
+			unless ( &BandShape ($File, $Parameters) ) { next }
+		}
+	}
+	
+	# for absorbance spectra
+	if ($Extension eq "abl") {
+		$OutFile = $BaseName . ".ab";
+		
+		if ($Options->{ashape}) {
+			unless ( &RunAshape ($File, $Parameters) ) { next }
+			
+			if (-f "ashape.dat" ) { system "rm ashape.dat" }
+		}
+		else {
+			unless ( &BandShape ($File, $Parameters) ) { next }
+		}
+	}
+	
+	# for LD spectra
+	if ($Extension eq "vec") {
+		my ($Point, $x, $y, $z, @AX, @AY, @AZ, $LD, $i, $PerpAvg);
+		my $VecData = [];
+		
+		# if no LD method was selected, choose LD by default
+		if (not $Options->{ld} and not $Options->{dr} and not $Options->{ldr}) {
+			$Options->{ld} = 1;
+		}
+		
+		# read the transition dipole moment vectors from matmac
+		ReadVecFile ($BaseName, $VecData);
+		
+		# create the files for the absorbance line spectra
+		open ABLX,    ">$BaseName.x.abl";
+		open ABLY,    ">$BaseName.y.abl";
+		open ABLZ,    ">$BaseName.z.abl";
+		open ABLPARA, ">$BaseName.para.abl";
+		open ABLPERP, ">$BaseName.perp.abl";
+		open ABL,     ">$BaseName.abl";
+		
+		# write the absorbance for each each coordinate axis
+		foreach $Point ( @{$VecData} ) {
+			# printf ABLX " %14.6f%14.6f\n", $Point->{Wavelength}, (xComponent ($Point))**2;
+			# printf ABLY " %14.6f%14.6f\n", $Point->{Wavelength}, (yComponent ($Point))**2;
+			# printf ABLZ " %14.6f%14.6f\n", $Point->{Wavelength}, (zComponent ($Point))**2;
+			# printf ABL  " %14.6f%14.6f\n", $Point->{Wavelength}, 
+			#    (xComponent ($Point))**2 + (yComponent ($Point))**2 + (zComponent ($Point))**2;
+			
+			printf ABLX " %14.6f%14.6f\n", $Point->{Wavelength}, $Point->{x}**2;
+			printf ABLY " %14.6f%14.6f\n", $Point->{Wavelength}, $Point->{y}**2;
+			printf ABLZ " %14.6f%14.6f\n", $Point->{Wavelength}, $Point->{z}**2;
+			
+			printf ABLPARA " %14.6f%14.6f\n", $Point->{Wavelength}, $Point->{z}**2;
+			printf ABLPERP " %14.6f%14.6f\n", $Point->{Wavelength}, 0.5 * ($Point->{x}**2 + $Point->{y}**2);
+			
+			printf ABL  " %14.6f%14.6f\n", $Point->{Wavelength}, $Point->{x}**2 +
+			                                                     $Point->{y}**2 +
+			                                                     $Point->{z}**2;
+		}
+		
+		close ABLX;
+		close ABLY;
+		close ABLZ;
+		close ABLPARA;
+		close ABLPERP;
+		close ABL;
+		
+		if ($Options->{ashape}) {
+			unless ( &RunAshape ("$BaseName.x.abl",    $Parameters) ) { next }
+			unless ( &RunAshape ("$BaseName.y.abl",    $Parameters) ) { next }
+			unless ( &RunAshape ("$BaseName.z.abl",    $Parameters) ) { next }
+			unless ( &RunAshape ("$BaseName.para.abl", $Parameters) ) { next }
+			unless ( &RunAshape ("$BaseName.perp.abl", $Parameters) ) { next }
+			unless ( &RunAshape ("$BaseName.abl",      $Parameters) ) { next }
+			
+			if (-f "ashape.dat" ) { system "rm ashape.dat" }
+		}
+		else {
+			unless ( &BandShape ("$BaseName.x.abl",    $Parameters) ) { next }
+			unless ( &BandShape ("$BaseName.y.abl",    $Parameters) ) { next }
+			unless ( &BandShape ("$BaseName.z.abl",    $Parameters) ) { next }
+			unless ( &BandShape ("$BaseName.para.abl", $Parameters) ) { next }
+			unless ( &BandShape ("$BaseName.perp.abl", $Parameters) ) { next }
+			unless ( &BandShape ("$BaseName.abl",      $Parameters) ) { next }
+		}
+		
+		@AX = ReadSpectrum ("$BaseName.x.ab");
+		@AY = ReadSpectrum ("$BaseName.y.ab");
+		@AZ = ReadSpectrum ("$BaseName.z.ab");
+		
+		##################################################	
+		
+		open PARA, ">$BaseName.para.ab";
+		open PERP, ">$BaseName.perp.ab";
+		for $i ( 0 .. $#AX ) {
+			$x = $AX[$i]->[1];
+			$y = $AY[$i]->[1];
+			$z = $AZ[$i]->[1];
+			
+			# square already done before adding bandshapes
+			$PerpAvg = 0.5 * ($x + $y);
+			
+			printf PARA " %14.6f%14.6f\n", $AX[$i]->[0], $z;
+			printf PERP " %14.6f%14.6f\n", $AX[$i]->[0], $PerpAvg;
+		}
+		close PARA;
+		close PERP;
+		
+		##################################################	
+		
+		if ($Options->{ld})    {
+			open LD,    ">$BaseName.ld";
+			$OutFile = $BaseName . "ld";
+		}
+		
+		if ($Options->{dr}) {
+			open DR,    ">$BaseName.dr";
+		}
+		
+		if ($Options->{ldr}) {
+			open REDLD, ">$BaseName.ldr";
+		}
+		
+		for $i ( 0 .. $#AX ) {
+			# $x = xComponent ({x => $AX[$i]->[1], y => $AY[$i]->[1], z => $AZ[$i]->[1]});
+			# $y = yComponent ({x => $AX[$i]->[1], y => $AY[$i]->[1], z => $AZ[$i]->[1]});
+			# $z = zComponent ({x => $AX[$i]->[1], y => $AY[$i]->[1], z => $AZ[$i]->[1]});
+			
+			$x = $AX[$i]->[1];
+			$y = $AY[$i]->[1];
+			$z = $AZ[$i]->[1];
+			
+			if (not defined $x or not defined $y or not defined $z) {
+				print STDERR "\nERROR: Problem found after xyz = ", $AX[$i-1][0], " ,  ", $AY[$i-1][0], " ", $AZ[$i-1][0], "\n";
+				exit 23;
+			}
+			
+			# square already done before adding bandshapes
+			$PerpAvg = 0.5 * ($x + $y);
+			
+			if ($Options->{ld}) {
+				$LD = $z - $PerpAvg;
+				
+				printf LD " %14.6f%14.6f\n", $AX[$i]->[0], $LD;
+			}
+			
+			if ($Options->{dr}) {
+				if ($z + $PerpAvg != 0) {
+					$LD = ( $z - $PerpAvg )    #    A(par) - A(perp)
+					           /               # =  ----------------
+					      ( $z + $PerpAvg );   #    A(par) + A(perp)
+				}
+				else {
+					$LD = 0;
+				}
+				
+				printf DR " %14.6f%14.6f\n", $AX[$i]->[0], $LD;
+			}
+			
+			if ($Options->{ldr}) {
+				if ( $x + $y + $z != 0) {
+					$LD = ( $z - $PerpAvg )               #    A(par) - A(perp)
+							/                               # =  ----------------
+							( ($x + $y + $z) / 3 );         #           A
+					
+					# $LD = (3/2) *
+					#              (3 *
+					#                     ( (cos ( Deg2Rad(Angle ($zAxis, {x => $x, y => $y, z => $z}))) )**2 - 1) );
+				}
+				else {
+					$LD = 0;
+				}
+				
+				printf REDLD " %14.6f%14.6f\n", $AX[$i]->[0], $LD;
+			}
+		}
+		
+		if ($Options->{ld})    {
+			close LD;
+			&ExtremeValues ("$BaseName.ld");
+		}
+		
+		if ($Options->{dr}) {
+			close DR;
+			&ExtremeValues ("$BaseName.dr");
+		}
+		
+		if ($Options->{ldr}) {
+			close REDLD;
+			&ExtremeValues ("$BaseName.ldr");
+		}
+		
+		if (not $Options->{xyz} or not $Options->{abl}) { system "rm $BaseName.?.abl" }
+		if (not $Options->{xyz} or not $Options->{ab} ) { system "rm $BaseName.?.ab"  }
+
+		if (not $Options->{abl}) {
+			system "rm $BaseName.abl";
+			system "rm $BaseName.para.abl $BaseName.perp.abl";
+		}
+		
+		if (not $Options->{ab} ) {
+			system "rm $BaseName.ab";
+			system "rm $BaseName.para.ab $BaseName.perp.ab";
+		}
+	}
+	
+	
+	if ($Parameters->{Plot}) {
+		if ($Extension eq "cdl") {
+			system "plotspectrum $BaseName.vib.cd -x $Parameters->{Min} $Parameters->{Max}";
+		}
+		
+		if ($Extension eq "abl") {
+			system "plotspectrum $BaseName.ab -x $Parameters->{Min} $Parameters->{Max}";
+		}
+		
+		if ($Extension eq "vec") {
+			if ($Options->{ld}) {
+				system "plotspectrum $BaseName.ld -ld -x $Parameters->{Min} $Parameters->{Max}";
+			}
+			elsif ($Options->{dr}) {
+				system "plotspectrum $BaseName.dr -dr -x $Parameters->{Min} $Parameters->{Max}";
+			}
+			elsif ($Options->{ldr}) {
+				system "plotspectrum $BaseName.ldr -ldr -x $Parameters->{Min} $Parameters->{Max}";
+			}
+		}
+	}
+}
+
+
+####################################################################################################
+####################################################################################################
+# SUBROUTINES
+####################################################################################################
+####################################################################################################
+
+sub ReadPDB { # parses the PDB file to determine the number of residues
+	my $BaseName    = shift;
+	my $Parameters  = shift;
+	my $SingleChain = shift;
+	
+	my ($PDB, $Chain, $Verbose);
+	
+	if (not -f "$BaseName.pdb") { return undef }
+	
+	if ($Options->{silent}) { $Verbose = 0 }
+	                   else { $Verbose = 1 }
+
+	$PDB = ParsePDB->new (FileName => "$BaseName.pdb", Verbose => $Verbose, NoHETATM => 1, NoANISIG => 1); 
+	
+	$Chain = undef;
+	
+	if (defined $SingleChain) {
+		if (defined $SingleChain->[0]) { $Chain = $SingleChain->[0] }
+		                          else { $Chain = 0                 }
+	}
+	
+	$Parameters->{Factor} = $PDB->CountResidues (Model => 0, Chain => $Chain);
+	
+	return 1;
+} # of sub ReadPDB
+
+
+sub ReadStf { # reads the stf file if it is found
+	my $BaseName = shift;
+	my $StfData  = shift;
+	my (@Content, $LineCount, $Line, @Fields);
+	
+	if (not -f "$BaseName.stf") { return }
+	
+	open FILE, "<$BaseName.stf";
+	@Content = <FILE>;       # read the whole file
+	chomp @Content;          # remove all line feeds
+	close FILE;
+	
+	$LineCount = 0;
+	
+	while (@Content) {
+		$Line = shift @Content;
+		$Line =~ s/^\s+|\s+$//; # remove all leading and trailing blanks
+		
+		if ( ($Line =~ m/^#/) or ($Line eq "") ) { next }         # if line is comment or blank, skip it
+		                                    else { ++$LineCount } # count each non-comment line
+		
+		@Fields = split /\s+/, $Line;
+		
+		if ($LineCount == 1) {
+			$StfData->{Groups}  = $Fields[0];
+			$StfData->{Types}   = $Fields[1];
+			$StfData->{BBTRANS} = $Fields[2];
+			$StfData->{CTTRANS} = $Fields[3];
+			$StfData->{Factor}  = $Fields[4];
+		}
+		elsif ($LineCount == 2) {
+			$StfData->{ConvFactor} = $Fields[0];
+		}
+		elsif ($LineCount == 3) {
+			$StfData->{Min}      = $Fields[0];
+			$StfData->{Max}      = $Fields[1];
+			$StfData->{Interval} = $Fields[2];
+			last;
+		}
+	}
+} # of sub ReadStf
+
+
+sub CheckParameters { # combines the parameters given by command line and the stf file
+	my $StfData    = shift; # medium priority
+	my $Options    = shift; # highest priority
+	my $Parameters = shift; # final parameters
+	
+	my ($File);
+	
+	####################################################################################################
+	# first read the STF parameters into $Parameters
+	####################################################################################################
+	
+	if (defined $StfData->{Min})       { $Parameters->{Min}       = $StfData->{Min}       }
+	if (defined $StfData->{Max})       { $Parameters->{Max}       = $StfData->{Max}       }
+	if (defined $StfData->{Interval})  { $Parameters->{Interval}  = $StfData->{Interval}  }
+	if (defined $StfData->{Factor})    { $Parameters->{Factor}    = $StfData->{Factor}    }
+	
+	
+	####################################################################################################
+	# now read the command line parameters into $Paramters, overwriting the ones given before
+	####################################################################################################
+	
+	if    ($Options->{plot}) { $Parameters->{Plot} = 1    }
+	
+	if    ($Options->{al}) { $Parameters->{CurveType} = 1 }
+	elsif ($Options->{l})  { $Parameters->{CurveType} = 2 }
+	elsif ($Options->{g})  { $Parameters->{CurveType} = 3 }
+	
+	if ($Options->{s}) { $Parameters->{Factor}    = $Options->{s} }
+	if ($Options->{w}) { $Parameters->{Bandwidth} = $Options->{w} }
+	if ($Options->{i}) { $Parameters->{Interval}  = $Options->{i} }
+	if ($Options->{x}) {
+		if (scalar @{$Options->{x}} != 2) {
+			print STDERR "ERROR: range must be given for instance as \"-x $DefaultMin $DefaultMax\"!\n\n";
+			exit 120;
+		}
+		
+		$Parameters->{Min} = $Options->{x}->[0];
+		$Parameters->{Max} = $Options->{x}->[1];
+	}
+	else {
+		# If no xRange is defined, take the range from the STF file.
+		# This is sensible anyway, as this way all calculated data are used, it can later be decided
+		# to plot only a certain range of it anyway.
+		$Parameters->{Min} = $StfData->{Min};
+		$Parameters->{Max} = $StfData->{Max};
+	}
+	
+	
+	####################################################################################################
+	# add default values, if needed
+	####################################################################################################
+	
+	if (not $Parameters->{Min})       { $Parameters->{Min}       = $DefaultMin        }
+	if (not $Parameters->{Max})       { $Parameters->{Max}       = $DefaultMax        }
+	if (not $Parameters->{CurveType}) { $Parameters->{CurveType} = $DefaultCurveType  }
+	if (not $Parameters->{Interval})  { $Parameters->{Interval}  = $DefaultInterval   }
+	if (not $Parameters->{Bandwidth}) { $Parameters->{Bandwidth} = $DefaultBandwidth  }
+	
+	if (not $Parameters->{Factor}) {
+		print STDERR "ERROR: Scale factor (number of groups) needs to be defined by giving\n";
+		print STDERR "       the .pdb file or via parameter -s.\n\n";
+		exit 125;
+	}
+} # of sub CheckParameters
+
+
+sub BandShape { # calculated the curve from the line spectrum
+	my $File       = shift;
+	my $Parameters = shift;
+	
+	my ($BaseName, $Extension, @Content, @Data, $Line, @Fields, $Trans);
+	my (@Shape, $NShape, $WaveLength, $i, $NewWL, $Factor1, $Factor2);
+	my ($ScaleFactor);
+	
+	my $SqrtPi = sqrt 3.141592654;
+	
+	
+	####################################################################################################
+	# read the xy data into @Data
+	####################################################################################################
+	
+	open INFILE, "<$File" or die "\nCould not open $File\n";
+	@Content = <INFILE>;
+	close INFILE;
+	chomp @Content;
+	
+	$Options->{TransCount} = 0;          # counter for transitions
+	$Options->{NegativeWavelengths} = 0; # counter for negative wavelengths
+	
+	while (@Content) {
+		$Line = shift @Content;
+		$Line =~ s/^\s+//g;        # remove all leading and trailing tabs and blanks
+		if ($Line eq "" or $Line =~ m/^#/) { next }  # skip empty and comment lines
+		
+		@Fields = split /\s+/, $Line;
+		++$Options->{TransCount};
+		
+		# check for negative wavelengths (this is bad...)
+		if ($Fields[0] < 0) {
+			++$Options->{NegativeWavelengths};
+			
+			if ($Options->{force}) {
+				push @Data, { WL => $Fields[0], Rot => $Fields[1] };
+			}
+		}
+		else { # if the wavelength is bigger than zero
+			push @Data, { WL => $Fields[0], Rot => $Fields[1] };
+		}
+	}
+	
+	if ($Options->{NegativeWavelengths}) {
+		# if the spectrum is forced despite negative wavelengths, the problematic ones
+		# are NOT added to the array, i.e. are ignored
+		if ($Options->{force}) {
+			print STDERR "WARNING: $File contains negative wavelengths for " .
+			             "$Options->{NegativeWavelengths} of $Options->{TransCount} " .
+			             "transitions! Spectrum created nevertheless.\n";
+		}
+		else {
+			print STDERR "ERROR: $File contains negative wavelengths! Spectrum skipped.\n";
+			return 0;
+		}
+	}
+	
+	
+	####################################################################################################
+	# determine the type of the calculation and create the output files
+	####################################################################################################
+	
+	$BaseName  = GetBaseName  ($File);
+	$Extension = GetExtension ($File);
+	
+	if ($Extension eq "cdl") {
+		open OUTPUT,  ">$BaseName.cd" or die "\nCould not open $BaseName.cd\n";
+		
+		# the factor 1.28 (4240/3300) was taken from ashape.f
+		$ScaleFactor = 1.2848484848 * 3300 / $Parameters->{Factor};
+	}
+	elsif ($Extension eq "abl") {
+		open OUTPUT,  ">$BaseName.ab" or die "\nCould not open $BaseName.ab\n";
+		
+		# the factor 1.28 (4240/3300) was taken from ashape.f
+		$ScaleFactor = 1.2848484848 / $Parameters->{Factor};
+	}
+	elsif ($Extension eq "vec") {
+		open OUTPUT,  ">$BaseName.ab" or die "\nCould not open $BaseName.ab\n";
+		
+		# the factor 1.28 (4240/3300) was taken from ashape.f
+		$ScaleFactor = 1.2848484848 / $Parameters->{Factor};
+	}
+	else {
+		print STDERR "ERROR: Extension $Extension could not be interpreted. Please use\n";
+		print STDERR "       .cdl for CD, .abl for absorbance and .vec for LD.\n\n";
+		exit 130;
+	}
+	
+	
+	####################################################################################################
+	# calculate the shape
+	####################################################################################################
+	
+	$NShape = int ($Parameters->{Max} - $Parameters->{Min}) / $Parameters->{Interval};
+	for (0 .. $NShape) { $Shape[$_] = 0 }
+	
+	if ($Parameters->{CurveType} == 1) { # approximate Lorentzian shape
+		foreach $Trans (@Data) {
+			if ($Trans->{Rot} != 0) {
+				$Factor1 = $Trans->{Rot} * $Parameters->{Bandwidth} * $Trans->{WL};
+				
+				for $i (0 .. $NShape) {
+					$NewWL = $Parameters->{Min} + $i * $Parameters->{Interval};
+					
+					$Factor2 = ($Trans->{WL} - $NewWL)**2 + $Parameters->{Bandwidth}**2;
+					$Shape[$i] = $Shape[$i] +
+					             $ScaleFactor * $Factor1 / $Factor2;
+				}
+			}
+		}
+	}
+	elsif ($Parameters->{CurveType} == 2) { # Lorentzian shape
+		foreach $Trans (@Data) {
+			if ($Trans->{Rot} != 0) {
+				$Factor1 = $Trans->{Rot} * $Parameters->{Bandwidth} * ($Trans->{WL}**2);
+				
+				for $i (0 .. $NShape) {
+					$NewWL = $Parameters->{Min} + ($i * $Parameters->{Interval});
+					$Factor2 = ($Trans->{WL}**2 - $NewWL**2)**2 + ($NewWL**2 * $Parameters->{Bandwidth}**2);
+					$Shape[$i] = $Shape[$i] + $ScaleFactor * 2 * ($NewWL * $Factor1 / $Factor2);
+				}
+			}
+		}
+	}
+	elsif ($Parameters->{CurveType} == 3) { # Gaussian shape
+		foreach $Trans (@Data) {
+			if ($Trans->{Rot} != 0) {
+				$Factor1 = $Trans->{Rot} / $Parameters->{Bandwidth} * $Trans->{WL} * $SqrtPi;
+				
+				for $i (0 .. $NShape) {
+					$NewWL = $Parameters->{Min} + $i * $Parameters->{Interval};
+					$Factor2 = ( ($Trans->{WL} - $NewWL) / $Parameters->{Bandwidth})**2;
+					$Shape[$i] = $Shape[$i] + $ScaleFactor * $Factor1 * exp(-$Factor2);
+				}
+			}
+		}
+	}
+	else {
+		print STDERR "ERROR: Curve type $Parameters->{CurveType} could not be interpreted!\n\n";
+		exit 135;
+	}
+	
+	####################################################################################################
+	# write the output data
+	####################################################################################################
+	
+	for $i (0 .. $NShape) {
+		$WaveLength = $Parameters->{Min} + $i * $Parameters->{Interval};
+		printf OUTPUT ("%16.6f %16.6f\n", $WaveLength, $Shape[$i]);
+	}
+	
+	close OUTPUT;
+	
+	return 1;
+} # of sub BandShape
+
+
+sub RunAshape { # calculate the curves via ashape
+	my $File = shift;
+	my $Parameters = shift;
+	
+	my (@Content, @Fields, $Line);
+	
+	####################################################################################################
+	# check for negative wavelengths
+	####################################################################################################
+	
+	open INFILE, "<$File" or die "\nCould not open $File\n";
+	@Content = <INFILE>;
+	chomp @Content;
+	close INFILE;
+	
+	$Options->{TransCount} = 0;          # counter for transitions
+	$Options->{NegativeWavelengths} = 0; # counter for negative wavelengths
+	
+	while (@Content) {
+		$Line = shift @Content;
+		$Line =~ s/^\s+//g;        # remove all leading and trailing tabs and blanks
+		if ($Line eq "" or $Line =~ m/^#/) { next }  # skip empty lines and comments
+		
+		@Fields = split /\s+/, $Line;
+		
+		++$Options->{TransCount};
+		# check for negative wavelengths (this is bad...)
+		if ($Fields[0] < 0) { ++$Options->{NegativeWavelengths} }
+	}
+	
+	if ($Options->{NegativeWavelengths}) {
+		# if the spectrum is forced despite negative wavelengths, the problematic ones
+		# are NOT added to the array, i.e. are ignored
+		if ($Options->{force}) {
+			print STDERR "ERROR: $File contains negative wavelengths for " .
+			             "$Options->{NegativeWavelengths} of $Options->{TransCount} " .
+			             "transitions! Spectrum created nevertheless.\n";
+		}
+		else {
+			print STDERR "ERROR: $File contains negative wavelengths! Spectrum skipped.\n";
+			return 0;
+		}
+	}
+	
+	####################################################################################################
+	
+	&CreateAshapeDat ($Parameters);
+	system "ashape $File";
+	
+	return 1;
+} # of sub RunAshape
+
+
+sub ExtremeValues { # writes the extreme values to STDOUT and .ext files if requested
+	my $File = shift;
+
+	####################################################################################################
+	# Determine the extreme values
+	####################################################################################################
+	
+	if ($Options->{ext}) {
+		open EXTREME, ">$File.ext" or die "\nCould not open $BaseName.extab\n";
+	}
+
+	if (not $Options->{silent}) {
+		print "\n";
+		print "$File\n";
+	}
+	
+ 	@Spectrum = ReadSpectrum ($File);
+ 	
+ 	for $i (1 .. $#Spectrum-1) {
+ 		if ( ($Spectrum[$i]->[1] >  $Spectrum[$i-1]->[1]) and
+ 			  ($Spectrum[$i]->[1] >  $Spectrum[$i+1]->[1]) and
+ 			  ($Spectrum[$i]->[1] >= 0) ) {
+ 			
+ 			if (not $Options->{silent}) {
+ 				printf "Max: %16.6f %16.6f\n", $Spectrum[$i]->[0], $Spectrum[$i]->[1];
+ 			}
+ 			
+ 			if ($Options->{ext}) {
+ 				printf EXTREME "Max: %16.6f %16.6f\n", $Spectrum[$i]->[0], $Spectrum[$i]->[1];
+ 			}
+ 		}
+ 		elsif ( ($Spectrum[$i]->[1] <  $Spectrum[$i-1]->[1]) and
+ 				  ($Spectrum[$i]->[1] <  $Spectrum[$i+1]->[1]) and
+ 				  ($Spectrum[$i]->[1] <= 0) ) {
+ 			
+ 			if (not $Options->{silent}) {
+ 				printf "Min: %16.6f %16.6f\n", $Spectrum[$i]->[0], $Spectrum[$i]->[1];
+ 			}
+ 			
+ 			if ($Options->{ext}) {
+ 				printf EXTREME "Min: %16.6f %16.6f\n", $Spectrum[$i]->[0], $Spectrum[$i]->[1];
+ 			}
+ 		}
+ 	}
+	
+	if (not $Options->{silent}) { print "\n"    }
+	if (    $Options->{ext})    { close EXTREME }
+} # of sub ExtremeValues
+
+sub CreateAshapeDat { # creates ashape.dat if ashape is used
+	my $Parameters = shift;
+	
+	open  ASHAPE, ">ashape.dat" or die "Unable to write ashape.dat: $!";
+	print ASHAPE "# Curve type (1 = approx Lorentz, 2 = Lorentz, 3 = Gaussian)\n";
+	print ASHAPE $Parameters->{CurveType}, "\n";
+	print ASHAPE "# Number of areas of different half widths\n";
+	print ASHAPE "1\n";
+	print ASHAPE "# Half widths and wavelengths of the interval boundaries (nm ascending)\n";
+	print ASHAPE $Parameters->{Bandwidth}, "\n";
+	print ASHAPE "# Min and max waveLengths and intervals in spectrum (in nm)\n";
+	print ASHAPE $Parameters->{Min}, " ";
+	print ASHAPE $Parameters->{Max}, " ";
+	print ASHAPE $Parameters->{Interval}, " 1\n"; # The last "1" is needed by ashape
+	print ASHAPE "# Scale factor for intensities\n";
+	print ASHAPE $Parameters->{Factor}, "\n";
+	close ASHAPE;
+} # of sub CreateAshapeDat
+

@@ -1,0 +1,116 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    dipolemoment
+#
+# Function:   Reads in a blank/tab-separated list of monopoles and calculates the dipole moment
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 4188 $, $Date: 2009-03-28 21:42:31 +0000 (Sat, 28 Mar 2009) $
+#
+# Date:       June 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+
+my ($Line, @Fields, @Monopoles, $Monopole, $Distance, $DipoleMoment, $InFile);
+
+if (not @ARGV) {
+	print STDERR "\n";
+	print STDERR "Usage:   dipolemoment infile\n";
+	print STDERR "\n";
+	print STDERR "         Units are angstrom for coordinates and 1e-10 esu for charges.\n";
+	print STDERR "\n";
+	exit 1;
+}
+
+$InFile = shift;
+
+# open the file or die if somthing went wrong
+open FILE, "<$InFile" or die "File $InFile could not be opened: $!";
+
+while (<FILE>) {                       # foreach line in the file
+	$Line = $_;                         # read the current line
+	$Line =~ s/^\s+//;                  # remove leading blanks
+	@Fields = split /[\t\s]+/, $Line;   # split up the columns into an array
+
+	if (scalar @Fields < 4) { next }    # ignore empty or too short lines
+
+	# add the current monopole to the array of monopoles
+	push @Monopoles, {x => $Fields[0], y => $Fields[1], z => $Fields[2], q => $Fields[3]};
+}
+
+close FILE;
+
+$DipoleMoment = 0;
+
+my $CentrePos = { x => 0, y => 0, z => 0, q => 0, Counter => 0 };
+my $CentreNeg = { x => 0, y => 0, z => 0, q => 0, Counter => 0 };
+my $Moment    = { x => 0, y => 0, z => 0, q => 0, Counter => 0 };
+
+foreach $Monopole ( @Monopoles ) {
+	# convert the units angstrom to cm
+#	$Monopole->{x} = $Monopole->{x} * 1E-8;
+#	$Monopole->{y} = $Monopole->{y} * 1E-8;
+#	$Monopole->{z} = $Monopole->{z} * 1E-8;
+
+	# the charges in the monopole file are in 10^-10 esu
+	$Monopole->{q} = $Monopole->{q} * 1E-10;
+	
+	$Moment->{x} = $Moment->{x} + ( $Monopole->{x} * $Monopole->{q} );
+	$Moment->{y} = $Moment->{y} + ( $Monopole->{y} * $Monopole->{q} );
+	$Moment->{z} = $Moment->{z} + ( $Monopole->{z} * $Monopole->{q} );
+
+	$Monopole->{x} = $Monopole->{x} * $Monopole->{q};
+	$Monopole->{y} = $Monopole->{y} * $Monopole->{q};
+	$Monopole->{z} = $Monopole->{z} * $Monopole->{q};
+
+	if ($Monopole->{q} >= 0) {
+		# add up all positive coordinates and charges
+		$CentrePos->{x} = $CentrePos->{x} + $Monopole->{x};
+		$CentrePos->{y} = $CentrePos->{y} + $Monopole->{y};
+		$CentrePos->{z} = $CentrePos->{z} + $Monopole->{z};
+		$CentrePos->{q} = $CentrePos->{q} + $Monopole->{q};
+	}
+	else {
+		# add up all negative coordinates and charges
+		$CentreNeg->{x} = $CentreNeg->{x} + $Monopole->{x};
+		$CentreNeg->{y} = $CentreNeg->{y} + $Monopole->{y};
+		$CentreNeg->{z} = $CentreNeg->{z} + $Monopole->{z};
+		$CentreNeg->{q} = $CentreNeg->{q} + $Monopole->{q};
+	}
+}
+
+foreach ( qw/x y z/) {
+	# divide each coordinate by the charge (negative or positive respectively)
+	if ($CentrePos->{q} != 0) { $CentrePos->{$_} = $CentrePos->{$_} / $CentrePos->{q}; }
+	if ($CentreNeg->{q} != 0) { $CentreNeg->{$_} = $CentreNeg->{$_} / $CentreNeg->{q}; }
+}
+
+$Distance = sqrt ( ($CentreNeg->{x} - $CentrePos->{x})**2 +
+	                ($CentreNeg->{y} - $CentrePos->{y})**2 +
+				    	 ($CentreNeg->{z} - $CentrePos->{z})**2 );
+
+$DipoleMoment = $Distance * $CentrePos->{q};
+
+$Moment->{q} = sqrt ($Moment->{x}**2 + $Moment->{y}**2 + $Moment->{z}**2);
+
+print  "\n";
+printf "Dipole Moment:  %20.15f  %20.15f  %20.15f  %20.15f\n",
+       $Moment->{x}, $Moment->{y}, $Moment->{z}, $Moment->{q};
+printf "Positive centre:  %8.3f  %8.3f  %8.3f  %12.3f\n",
+       $CentrePos->{x}, $CentrePos->{y}, $CentrePos->{z}, $CentrePos->{q};
+printf "Negative centre:  %8.3f  %8.3f  %8.3f  %12.3f\n",
+       $CentreNeg->{x}, $CentreNeg->{y}, $CentreNeg->{z}, $CentreNeg->{q};
+printf "Distance:         %8.3f\n", $Distance;
+print  "\n";
+printf "%8.3f e*Angstrom\n%8.3f Debye\n\n", $DipoleMoment, $DipoleMoment * 4.803;
+

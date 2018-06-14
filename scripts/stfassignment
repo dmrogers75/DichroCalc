@@ -1,0 +1,217 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    stfassignment
+#
+# Function:   Lists all group assignments from the stf file along with the respective lines
+#             from the fmt and PDB file to verify the data
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 2990 $, $Date: 2008-05-16 13:51:11 +0100 (Fri, 16 May 2008) $
+#
+# Date:       May 2008
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use ReadMatmac;                      # read matmac input and output files
+use GetParameters;                   # to handle command line parameters
+use ReadMatmac;                      # to read matmac input/output files
+use ReadParSet;                      # to read in monopole parameter sets
+
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {     # create an anonymous hash
+	p => "string",
+	v => "switch",
+};
+
+my $Options = {};     # create an anonymous hash
+
+my $Help = "\n" .
+	"Usage:   stfassignments file.stf [-p]\n" .
+	"            -p    the parameter file with the monopole sets (default is ~/bin/parsets.par\n" .
+	"            -v    print all information, otherwise only differing atom data is displayed\n" .
+	"\n" .
+	"         prints out a list of all atom assignments from the stf, fmt and pdb files\n" .
+	"\n";
+
+####################################################################################################
+
+my ($InFile, @PDB, $Type, $Group, $GroupCount, $Atom, $i, $CurChrom, $GroupIndex, $Fields);
+my ($Parset, $MonopoleFile, $CurAtom, $Output, $Line);
+
+my $StfData      = {}; # create an anonymous hash 
+my $KorData      = []; # create an anonymous array 
+my $FmtData      = []; # create an anonymous array 
+my $Chromophores = []; # create an anynymous array
+my $Parsets      = {}; # create an anonymous hash
+
+GetParameters ($Parameters, $Options, $Help);
+
+if (not $Options->{rest}) { die "\nERROR: No file given to process!\n\n" }
+
+$InFile = shift @{$Options->{rest}};
+
+# remove the most common matmac extensions to get the base name
+$InFile =~ s/\.(pdb|stf|fmt|vec|pol|dbg)$//;
+
+if (not -f "$InFile.stf") { die "\nERROR: Could not find $InFile.stf.\n\n"; }
+if (not -f "$InFile.kor") { die "\nERROR: Could not find $InFile.kor.\n\n"; }
+
+if ($Options->{p}) {
+	$MonopoleFile = $Options->{p};
+}
+elsif (-f "parsets.par") {
+	$MonopoleFile = "parsets.par";
+}
+else {
+	$MonopoleFile = "$ENV{HOME}/bin/parsets.par";
+}
+
+if (not -f $MonopoleFile) {
+	print STDERR "\nERROR: Monopole file $MonopoleFile not found!\n\n";
+	exit 3;
+}
+
+ReadStfFile ($InFile, $StfData);
+ReadFmtFile ($InFile, $FmtData);
+ReadKorFile ($InFile, $KorData);
+ReadChromophoresDat ($Chromophores);
+
+open PDB, "<$InFile.pdb" or die "ERROR: Could not open $InFile.pdb: $!";
+@PDB = <PDB>;
+close PDB;
+
+@PDB = grep /^ATOM /, @PDB;
+
+$GroupCount = 0;
+
+foreach $Group ( @{$StfData->{Assignments}} ) {
+	++$GroupCount;
+
+	# the group in the chromophores array starts counting at 0 while the actual number starts counting at 1 due to FORTRAN
+	$GroupIndex = $StfData->{Types}[$GroupCount-1] - 1;
+	$Parset     = $StfData->{Names}[$GroupIndex];
+	
+	print  "----------------------------------------------------\n";
+	printf "   Group %4d:    $Parset\n\n", $GroupCount;
+	
+	if (not $Parsets->{$Parset}) {
+		$Parsets->{$Parset} = {};
+		ReadParSet ($MonopoleFile, $Parset, $Parsets->{$Parset});
+		
+		foreach $Atom ( @{$Parsets->{$Parset}{Atoms}} ) {
+			chomp $Atom->{Comment};
+			$Atom->{Comment} =~ s/\s//g;
+			$Atom->{Comment} =~ s/#//g;
+		}
+	}
+
+	if ($KorData) {
+		$Line = "         Matmac: ";
+		
+		foreach $Atom ( @{$KorData->[$GroupCount-1]{Atoms}} ) {
+			$Line = $Line . sprintf "%5s", $Atom->{Atom};
+		}
+		
+		printf "%-58s (read from kor file)\n\n", $Line;
+	}
+	
+	$CurAtom = 0;
+	
+	foreach $Atom ( @{$Group} ) {
+		$Fields = &SplitLine ($PDB[$Atom-1]);
+			
+		if ($Options->{v}) { $Output = 1 }
+		              else { $Output = 0 }
+		
+		if ( ( ($FmtData->[$Atom-1][0] != $Fields->{xCoord}) or
+			    ($FmtData->[$Atom-1][1] != $Fields->{yCoord}) or
+			    ($FmtData->[$Atom-1][2] != $Fields->{zCoord}) )
+			or
+		   ( $Parsets->{$Parset}{Atoms}[$CurAtom]{Comment} ne $Fields->{AtomType} )
+			# or
+		   # ( $Atom != $Fields->{AtomNumber} )
+		   )
+		{
+			print "    ------------- W A R N I N G -------------------- \n";
+			$Output = 1;
+		}
+		
+		if ($Output) {
+			printf "   Atom   %5d:  %4s %10.3f %10.3f %10.3f    (read from monopole file, stf and fmt)\n",
+			       $Atom, $Parsets->{$Parset}{Atoms}[$CurAtom]{Comment}, $FmtData->[$Atom-1][0], $FmtData->[$Atom-1][1], $FmtData->[$Atom-1][2];
+			
+			printf "          %5d:  %4s %10.3f %10.3f %10.3f    (read from pdb)\n",
+			       $Fields->{AtomNumber}, $Fields->{AtomType}, $Fields->{xCoord}, $Fields->{yCoord}, $Fields->{zCoord};
+			
+			printf "         Matmac:  %4s                                     (read from kor)\n\n",
+			       $KorData->[$GroupCount-1]{Atoms}[$CurAtom]{Atom};
+		}
+		
+		++$CurAtom;
+	}
+} # foreach $Group ( @{$StfData->{Assignments}} ) {
+
+
+
+####################################################################################################
+# Subroutines
+####################################################################################################
+
+sub SplitLine {
+	my $Line = shift;
+	my $Fields = {};
+
+	$Fields->{Race}              = substr ($Line,  0, 6); 
+	$Fields->{AtomNumber}        = substr ($Line,  6, 5);
+	$Fields->{AtomType}          = substr ($Line, 12, 4);
+	$Fields->{AltLoc}            = substr ($Line, 16, 1);
+	$Fields->{ResidueLabel}      = substr ($Line, 17, 3);
+	$Fields->{ChainLabel}        = substr ($Line, 21, 1);
+	$Fields->{CurResidueNumber}  = substr ($Line, 22, 4);
+	$Fields->{InsResidue}        = substr ($Line, 26, 1);
+	$Fields->{xCoord}            = substr ($Line, 30, 8);
+	$Fields->{yCoord}            = substr ($Line, 38, 8);
+	$Fields->{zCoord}            = substr ($Line, 46, 8);
+
+	$Fields->{Race}              =~ s/^\s+|\s+$//g;
+	$Fields->{AtomNumber}        =~ s/^\s+|\s+$//g; 
+	$Fields->{AtomType}          =~ s/^\s+|\s+$//g; 
+	$Fields->{AltLoc}            =~ s/^\s+|\s+$//g; 
+	$Fields->{ResidueLabel}      =~ s/^\s+|\s+$//g; 
+	$Fields->{ChainLabel}        =~ s/^\s+|\s+$//g; 
+	$Fields->{CurResidueNumber}  =~ s/^\s+|\s+$//g; 
+	$Fields->{InsResidue}        =~ s/^\s+|\s+$//g; 
+	$Fields->{xCoord}            =~ s/^\s+|\s+$//g; 
+	$Fields->{yCoord}            =~ s/^\s+|\s+$//g; 
+	$Fields->{zCoord}            =~ s/^\s+|\s+$//g; 
+	
+	return $Fields;
+} # of sub SplitLine
+
+sub GetChromophore { # searches the hash for a particular chromophore from chromophores.dat
+	my $Chrom        = shift;
+	my $Chromophores = shift;
+	my $CurChrom;
+
+	foreach $CurChrom ( @{$Chromophores} ) {
+		if ($Chrom eq $CurChrom->{Name}) { return $CurChrom }
+	}
+
+	return "";
+} # of sub GetChromophore
+
+
+

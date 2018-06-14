@@ -1,0 +1,74 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    momentangles
+#
+# Function:   Calculates the angles between transition dipole moments from the .kor file
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision$, $Date$
+#
+# Date:       June 2008
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use ReadMatmac;                      # to read Matmac in- and outputfiles
+use VectorMath;                      # for matrix and vector calculations
+use GetParameters;                   # to handle command line parameters
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {     # create an anonymous hash
+	rest => "stringlist[3]*",
+};
+
+my $Options = {       # create an anonymous hash
+};
+
+my $Help = "\n" .
+"Usage:   momentangles file.kor Trans1 Trans2\n" .
+"\n" .
+"         Trans1    transition on group i\n" .
+"         Trans2    transition on group i+x\n" .
+"\n" .
+"The script calculates the angle of the electric transition dipole moments of Trans1 on group 1\n" .
+"with Trans2 on subsequent groups.\n" .
+"\n";
+
+####################################################################################################
+
+my ($InFile, $Trans1, $Trans2, $Group, $Trans);
+my $KorData = [];
+
+GetParameters ($Parameters, $Options, $Help);
+
+$InFile = shift @{$Options->{rest}};
+$Trans1 = shift @{$Options->{rest}};
+$Trans2 = shift @{$Options->{rest}};
+
+$InFile =~ s/\.(kor|pdb|cd|cdl|out|fmt|stf)$//;
+
+ReadKorFile ($InFile, $KorData);
+
+print "Angle between vectors of transition $Trans1 and transition $Trans2:\n\n";
+
+for $Group (1 .. $#{$KorData}) {
+	print "i and i+$Group\n";
+	print Angle ($KorData->[0]{Transitions}[$Trans1-1]{VMU}, $KorData->[$Group]{Transitions}[$Trans2-1]{VMU});
+	print "\n";
+	# print "Transition $Trans2:      ";
+	# print Angle ($KorData->[0]{Transitions}[$Trans2-1]{VMU}, $KorData->[$Group]{Transitions}[$Trans2-1]{VMU});
+	# print "\n";
+	print "\n";
+}
+

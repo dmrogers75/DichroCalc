@@ -1,0 +1,150 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    plotdihedrals
+#
+# Function:   Plots the dihedral angles of a certain residue for a whole ensemble of files
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3925 $, $Date: 2009-02-12 02:12:46 +0000 (Thu, 12 Feb 2009) $
+#
+# Date:       October 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use GetParameters;                   # to handle command line parameters
+use File::Copy;                      # to copy and move files
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {     # create an anonymous hash
+	r => "string*",
+	v => "switch",
+	o => "string",
+	f => "string",
+	t => "string",
+};
+
+my $Options = {       # create an anonymous hash
+	o => "dihedralplot",
+	t => "Dihedral angle distribution",
+};
+
+my $Help = "\n" .
+"Usage:   plotdihedrals *.pdb -r residue [-f xyfile] [-o outfile] [-t title]\n" .
+"\n" .
+"     -f   the file containing the data to plot (to bypass the angle extraction)\n" .
+"     -r   defines the residue whose angles are taken (output of \"dihedrals\"\n" .
+"     -o   defines the output ps file (default $Options->{o}.ps)\n" .
+"     -t   defines the title of the plot\n" .
+"     -v   verbose mode\n" .
+"\n";
+
+####################################################################################################
+
+my ($File, @Output, @Fields, @Angles, $Angle, $CurAngle, $Failed);
+
+GetParameters ($Parameters, $Options, $Help);
+
+if ($Options->{f}) {
+	&PlotFile ($Options) }
+else { 
+	&CreateFile ($Options);
+	&PlotFile ($Options);
+}
+
+sub CreateFile {
+	my $Options = shift;   # always remember: global variables are *bad*!
+	
+	if (not $Options->{rest}) {
+		print STDERR "\nERROR: No input files given!\n\n";
+		exit 1;
+	}
+
+	$Options->{o} =~ s/\.(xy|ps)//; # remove extension
+	$Options->{f} = $Options->{o} . ".xy";
+	
+	if (not $Options->{o}) { $Options->{o} = $Options->{f} . ".ps" }
+
+	open ANGLES, ">$Options->{f}";
+
+	foreach $File ( @{$Options->{rest}} ) {
+		$File =~ s/\.pdb$//;                                     # remove the extension
+		
+		if ($Options->{v}) { print "Processing $File...\n" }
+		
+		# determine the dihedral angles
+		@Output = `dihedrals $File.pdb`;                         # grab the output from dihedrals
+		until ($Output[0] =~ m/Phi.+Psi/) { shift @Output }      # remove all lines before the first angle
+
+		# the header line (Phi, Psi, ...) is still there (index 0), i.e. first residue is at index 1
+		$Output[$Options->{r}] =~ s/^\s+//g;                     # remove leading blanks of the requested line
+		
+		@Fields = split /[\s\t]+/, $Output[$Options->{r}];       # split the requested line into columns
+
+		# The angles are plotted with gnuplot as barchart (the angle in degress is plotted
+		# as y, the angle "name" like phi, psi, ... is x. For gnuplot there is still a numeric
+		# x-value column needed, i.e. phi=1, psi=2, etc. Later the number 2 is replaced by the
+		# label psi on the x axis.
+		#                phi         psi         chi1        chi2        omega
+		printf ANGLES "   1   %8.3f   2   %8.3f   3   %8.3f   4   %8.3f   5   %8.3f\n",
+							$Fields[2], $Fields[3], $Fields[4], $Fields[5], $Fields[6];
+	}
+
+	close ANGLES;
+} # of sub CreateFile
+
+
+sub PlotFile {
+	my $Options = shift;   # always remember: global variables are *bad*!
+	my $BaseName;
+
+	if (not -f $Options->{f}) {
+		print STDERR "\nERROR: File $Options->{f} not found!\n\n";
+		exit 2;
+	}
+
+	$BaseName = $Options->{f};
+	$BaseName =~ s/\.(xy|ps)//;     # remove extension
+	if (not $Options->{o}) { $Options->{o} = $BaseName . ".ps" }
+	else {
+		if ($Options->{o} !~ m/\.ps$/) { $Options->{o} = $Options->{o} . ".ps" }
+	}
+	
+	open  CMD, ">$BaseName.cmd" or die "ERROR: Could not write $BaseName.cmd: $!";
+	print CMD "set terminal postscript enhanced colour solid\n";
+	print CMD "set output \"$Options->{o}\"\n\n";
+
+	if ($Options->{t}) {
+		print CMD "set title \"$Options->{t}\"\n\n";
+	}
+
+	print CMD "set xlabel \"Dihedral angles\"\n";
+	print CMD "set ylabel \"Dihedral angles\"\n\n";
+	print CMD "set xrange [0:6]\n";
+	print CMD "set nokey\n";
+	print CMD "set xtics (\"phi\" 1, \"psi\" 2, \"chi1\" 3, \"chi2\" 4, \"omega\" 5)\n\n";
+
+	print CMD "plot \\\n";
+	print CMD "   \"$Options->{f}\" using 1:2  with points pt 1 lc rgb \"red\", \\\n";
+	print CMD "   \"$Options->{f}\" using 3:4  with points pt 1 lc rgb \"red\", \\\n";
+	print CMD "   \"$Options->{f}\" using 5:6  with points pt 1 lc rgb \"red\", \\\n";
+	print CMD "   \"$Options->{f}\" using 7:8  with points pt 1 lc rgb \"red\", \\\n";
+	print CMD "   \"$Options->{f}\" using 9:10 with points pt 1 lc rgb \"red\"\n";
+
+
+	close CMD;
+
+	system "gnuplot $BaseName.cmd";
+} # of sub PlotFile
+

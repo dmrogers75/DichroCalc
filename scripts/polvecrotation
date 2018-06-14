@@ -1,0 +1,333 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    polvecrotation
+#
+# Function:   Calculated the LD for one single rotating dipole transition moment vector
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3890 $, $Date: 2009-02-11 18:30:50 +0000 (Wed, 11 Feb 2009) $
+#
+# Date:       November 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use GetParameters;                   # to handle command line parameters
+
+###################################################################################################
+# Configuration Variables
+####################################################################################################
+
+my $Min = -2;
+my $Max =  2;
+my $SquareLength = 2;
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {     # create an anonymous hash
+	x   => "switch",
+	y   => "switch",
+	z   => "switch",
+	t   => "string",
+	o   => "string",
+	mu  => "list[3]",
+	pol => "list[3]",
+};
+
+my $Options = {       # create an anonymous hash
+	ldr => 1,
+	o     => "polvecrot",
+};
+
+my $Help = "\n" .
+"Usage:   polvecrotation -mu x y z [-x|y|z] -o outputfile\n" .
+"         mu       electric transition dipole moment vector (gets multiplied with 0.3934,\n" .
+"                  the eigenvector in a.u., to calculate the polarization vector\n" .
+"         pol      polarization vector (either -mu or pol may be given),\n" .
+"                  is takes as entered\n" .
+"         x, y, z  defines the axis about which is rotated\n" .
+"         t        title\n" .
+"         o        the output file\n" .
+"\n";
+
+####################################################################################################
+
+my (@Values, $Value, $Axis, $Angle, $Coord, $PolVec, $Title, $RotMu, $LD);
+
+GetParameters ($Parameters, $Options, $Help);
+
+if ($Options->{mu} and $Options->{pol}) {
+	print STDERR "\nERROR: Either -mu or -pol may be given.\n\n";
+	exit 1;
+}
+
+if (not $Options->{mu} and not $Options->{pol}) {
+	print STDERR "\nERROR: No vector given!\n\n";
+	exit 1;
+}
+
+if ($Options->{y}) {
+	$Axis = { x => 0, y => 1, z => 0};
+	if (not $Options->{t}) {
+		$Options->{t} = "Rotation about y-axis";
+	}
+}
+elsif ($Options->{z}) {
+	$Axis = { x => 0, y => 0, z => 1};
+	if (not $Options->{t}) {
+		$Options->{t} = "Rotation about z-axis";
+	}
+}
+else { # if -x or nothing is given
+	$Axis = { x => 1, y => 0, z => 0};
+	if (not $Options->{t}) {
+		$Options->{t} = "Rotation about x-axis";
+	}
+}
+
+if ($Options->{mu}) {
+	$PolVec->{x} = $Options->{mu}[0] * 0.3934;
+	$PolVec->{y} = $Options->{mu}[1] * 0.3934;
+	$PolVec->{z} = $Options->{mu}[2] * 0.3934;
+}
+else {
+	$PolVec->{x} = $Options->{pol}[0];
+	$PolVec->{y} = $Options->{pol}[1];
+	$PolVec->{z} = $Options->{pol}[2];
+}
+
+system "clear";
+
+print "Angle                  x            y            z        LD\n\n";
+for $Angle ( qw/0 30 60 90 120 150 180 210 240 270 300 330 / ) {
+	$RotMu = &Rotation ($PolVec, $Angle , $Axis);
+	$LD = &GenerateLD ([$RotMu]);
+
+	printf "%5d   mu(pol) = %12.6f %12.6f %12.6f   LD = %12.6f\n",
+	$Angle, $RotMu->{x}, $RotMu->{y}, $RotMu->{z}, $LD;
+	push @Values, { LD => $LD, Angle => $Angle, RotMu => "$RotMu->{x}, $RotMu->{y}, $RotMu->{z}" };
+}
+
+open  CMD, ">$Options->{o}.cmd";
+print CMD "set encoding iso_8859_1\n";
+print CMD "set terminal postscript colour enhanced\n";
+print CMD "set output \"$Options->{o}-vectors.ps\"\n\n";
+print CMD "set title \"$Options->{t}\"\n\n";
+print CMD "set grid\n";
+print CMD "set size square\n";
+print CMD "set xzeroaxis\n";
+print CMD "\n";
+print CMD "set xlabel \"x\"\n";
+print CMD "set ylabel \"y\"\n";
+print CMD "set zlabel \"z\"\n";
+print CMD "\n";
+print CMD "set xrange [-2:2]\n";
+print CMD "set yrange [-2:2]\n";
+print CMD "set zrange [-2:2]\n";
+print CMD "\n";
+print CMD "set arrow from 0, $Min, 0 to 0, $Max, 0 nohead lt 2\n";
+print CMD "set arrow from $Min, 0, 0 to $Max, 0, 0 nohead lt 2\n";
+print CMD "set arrow from 0, 0, $Min to 0, 0, $Max nohead lt 2\n";
+print CMD "\n";
+
+if ($Options->{y}) {
+	# draw square in xz plane
+	print CMD "set arrow from -$SquareLength, 0,  $SquareLength to  $SquareLength, 0,  $SquareLength nohead lt 2\n";
+	print CMD "set arrow from -$SquareLength, 0,  $SquareLength to -$SquareLength, 0, -$SquareLength nohead lt 2\n";
+	print CMD "set arrow from  $SquareLength, 0, -$SquareLength to  $SquareLength, 0,  $SquareLength nohead lt 2\n";
+	print CMD "set arrow from  $SquareLength, 0, -$SquareLength to -$SquareLength, 0, -$SquareLength nohead lt 2\n";
+}
+elsif ($Options->{z}) {
+	# draw square in xy plane
+	print CMD "set arrow from -$SquareLength,  $SquareLength, 0 to  $SquareLength,  $SquareLength, 0 nohead lt 2\n";
+	print CMD "set arrow from -$SquareLength,  $SquareLength, 0 to -$SquareLength, -$SquareLength, 0 nohead lt 2\n";
+	print CMD "set arrow from  $SquareLength, -$SquareLength, 0 to  $SquareLength,  $SquareLength, 0 nohead lt 2\n";
+	print CMD "set arrow from  $SquareLength, -$SquareLength, 0 to -$SquareLength, -$SquareLength, 0 nohead lt 2\n";
+}
+else { # if -x or nothing is given
+	# draw square in xz plane
+	print CMD "set arrow from 0, -$SquareLength,  $SquareLength to 0,  $SquareLength,  $SquareLength nohead lt 2\n";
+	print CMD "set arrow from 0, -$SquareLength,  $SquareLength to 0, -$SquareLength, -$SquareLength nohead lt 2\n";
+	print CMD "set arrow from 0,  $SquareLength, -$SquareLength to 0,  $SquareLength,  $SquareLength nohead lt 2\n";
+	print CMD "set arrow from 0,  $SquareLength, -$SquareLength to 0, -$SquareLength, -$SquareLength nohead lt 2\n";
+}
+
+print CMD "\n";
+
+foreach $Value ( @Values ) {
+	print CMD "set arrow from 0, 0, 0 to $Value->{RotMu}\n";
+	print CMD "set label \"$Value->{Angle}\" at $Value->{RotMu}\n\n";
+}
+
+# plot a dummy point
+print CMD "\nsplot '-' notitle\n0 0 0\ne\n";
+
+print CMD "unset arrow\n";
+print CMD "unset label\n";
+print CMD "unset grid\n\n";
+
+print CMD "set xlabel \"Angle\"\n";
+print CMD "set ylabel \"LD\"\n\n";
+
+print CMD "set xrange [0:360]\n";
+print CMD "set yrange [-3:3]\n";
+
+print CMD "set output \"$Options->{o}-ld.ps\"\n";
+print CMD "plot '-' title \"LD\" with impulses\n";
+
+foreach $Value ( @Values ) {
+	print CMD "$Value->{Angle}     $Value->{LD}\n";
+}
+
+print CMD "e\n\n";
+close CMD;
+
+system "gnuplot $Options->{o}.cmd";
+
+
+sub GenerateLD { # calculate the LD from the polarization vectors
+	my $VecData = shift;
+	my ($Trans, $LD, $PerpAvg, $x, $y, $z);
+	
+	foreach $Trans ( @{$VecData} ) {
+		# Definition:
+		# x-Axis = perpendicular
+		# z-Axis = parallel
+		
+		$x = $Trans->{x};
+		$y = $Trans->{y};
+		$z = $Trans->{z};
+		
+		$PerpAvg = 0.5 * ($x**2 + $y**2);
+		
+		if ($Options->{ld}) {
+			#########################################################################
+			# Calculate LD
+			#########################################################################
+			
+			$LD = 3 * ( $z**2 - $PerpAvg );
+		}
+		elsif ($Options->{dr}) {
+			#########################################################################
+			# Calculate the Dichroic Ratio
+			#########################################################################
+			
+			$LD = ( $z**2 - $PerpAvg )
+			         /
+			      ( $z**2 + $PerpAvg);
+		}
+		elsif ($Options->{ldr}) {
+			#########################################################################
+			# Calculate the Reduced LD (see Cantor & Schimmel p. 369)
+			#########################################################################
+			#
+			#        A(par) - A(perp)
+			# LDr =  ------------------ = 3/2 ( 3 cos^2 alpha - 1)
+			#               A
+			#
+			#########################################################################
+			
+			$LD = ( $z**2 - $PerpAvg )               #    A(par) - A(perp)
+			         /                               # =  ----------------
+			     ( ($x**2 + $y**2 + $z**2) / 3 );   #           A
+		}
+		else {
+			print STDERR "\nERROR: No spectrum type (ld, dr, ldr) has been chosen!\n\n";
+			exit 40;
+		}
+		
+	 return $LD;	
+	}
+	
+	return 1;
+} # of sub GenerateLD
+
+
+sub Rotation { # rotation about an arbitrary axis
+	# Rotates a given point about an arbitrary axis u about a given angle
+	# See Anton & Rorres, Elementary Linear Algebra (Applications Version)
+	# 8th Edition, page 181
+	
+	my $Coord = shift;
+	my $Angle = shift;
+	my $Axis  = shift;
+	
+	my ($x, $y, $z, @xMat, @yMat, @zMat, $ux, $uy, $uz, $Fac);
+	
+	$Angle = &Deg2Rad ($Angle);
+	
+	&Normalize ($Axis);
+	
+	$ux = $Axis->{x};
+	$uy = $Axis->{y};
+	$uz = $Axis->{z};
+	
+	$Fac = 1 - cos $Angle;
+	
+	# build the rotation matrix
+	@xMat = ( $ux*$ux * $Fac +       cos $Angle,   $uy*$ux * $Fac - $uz * sin $Angle,   $uz*$ux * $Fac + $uy * sin $Angle );
+	@yMat = ( $ux*$uy * $Fac + $uz * sin $Angle,   $uy*$uy * $Fac +       cos $Angle,   $uz*$uy * $Fac - $ux * sin $Angle );
+	@zMat = ( $ux*$uz * $Fac - $uy * sin $Angle,   $uy*$uz * $Fac + $ux * sin $Angle,   $uz*$uz * $Fac +       cos $Angle );
+	
+	# multiply the vector with the rotation matrix
+	$x = $Coord->{x} * $xMat[0] + $Coord->{y} * $xMat[1] + $Coord->{z} * $xMat[2];
+	$y = $Coord->{x} * $yMat[0] + $Coord->{y} * $yMat[1] + $Coord->{z} * $yMat[2];
+	$z = $Coord->{x} * $zMat[0] + $Coord->{y} * $zMat[1] + $Coord->{z} * $zMat[2];
+	
+	return {x => $x, y => $y, z => $z};
+	# $Coord->{x} = $x;
+	# $Coord->{y} = $y;
+	# $Coord->{z} = $z;
+} # of sub Rotation
+
+sub PrintVec {
+	my $Vector = shift;
+	printf "mu = %12.6f  %12.6f  %12.6f\n", $Vector->{x}, $Vector->{y}, $Vector->{z};
+}
+
+sub Deg2Rad { # converts degrees to readians
+	my $Pi = atan2 (1,1) * 4;  # camel book, page 684
+	my $Rad = $Pi/180;         # convert degrees to radians
+	
+	my $Angle = shift;
+	return $Angle * $Rad; 
+} # of sub Deg2Rad
+
+
+sub Rad2Deg { # converts radians to degrees
+	my $Pi = atan2 (1,1) * 4;  # camel book, page 684
+	my $Deg = 180/$Pi;         # convert radians to degrees
+	
+	my $Angle = shift;
+	return $Angle * $Deg;
+} # of sub Rad2Deg
+
+
+sub Normalize { # normalizes a vector
+	my $Vector = shift;
+	my $Norm;
+	
+	if (not defined $Vector->{x} or
+	    not defined $Vector->{y} or
+	    not defined $Vector->{z}) {
+	    return undef;
+	}
+	
+	$Norm = sqrt ( $Vector->{x}**2 + $Vector->{y}**2 + $Vector->{z}**2 );
+	
+	$Vector->{x} = $Vector->{x} / $Norm;
+	$Vector->{y} = $Vector->{y} / $Norm;
+	$Vector->{z} = $Vector->{z} / $Norm;
+} # of sub Normalize
+
+

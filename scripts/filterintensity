@@ -1,0 +1,109 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    filterintensity
+#
+# Function:   Filters PDB files according to the intensity of their CD spectra at certain 
+#             wavelengths
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3929 $, $Date: 2009-02-12 02:12:57 +0000 (Thu, 12 Feb 2009) $
+#
+# Date:       October 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use GetParameters;                   # to handle command line parameters
+use ReadSpectrum;                    # to read xy data
+use File::Copy;                      # to copy and move files
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {     # create an anonymous hash
+	d => "string",
+	w => "list*",
+	m => "switch",
+	v => "switch",
+};
+
+my $Options = {       # create an anonymous hash
+	d => "filtered",
+};
+
+my $Help = "\n" .
+"Usage:   filterintensity *.cd -w wavelength min max [wavelength min max] [...]\n" .
+"                                                    [-d outputdir] [-m]\n" .
+"\n" .
+"         -d   define an output directory, where the matching files are copied to\n" .
+"         -m   move the files instead of copying them\n" .
+"         -v   verbose mode\n" .
+"         -w   define the wavelength and min/max value of the intensity:\n" .
+"\n";
+
+####################################################################################################
+
+my ($File, @Spectrum, @Fields, @Wavelengths, $Wavelength, @CurSpectrum, $Failed);
+
+
+GetParameters ($Parameters, $Options, $Help);
+
+if (not $Options->{rest}) {
+	print STDERR "\nERROR: No input files given!\n\n";
+	exit 1;
+}
+
+if (scalar @{$Options->{w}} % 3 != 0) {
+	print STDERR "\nERROR: Number of item given via -w not dividable by three!\n\n";
+	exit 2;
+}
+
+# split up the -a parameter
+while ( @{$Options->{w}} ) {
+	my $Wavelength = {};
+	$Wavelength->{wav} = shift @{$Options->{w}};
+	$Wavelength->{min} = shift @{$Options->{w}};
+	$Wavelength->{max} = shift @{$Options->{w}};
+	
+	push @Wavelengths, $Wavelength;
+}
+
+if (not -d $Options->{d}) { mkdir $Options->{d} }
+
+foreach $File ( @{$Options->{rest}} ) {
+	$File =~ s/\.cd$//;                                     # remove the extension
+	$Failed = 0;
+	@Spectrum = ReadSpectrum ("$File.cd");                   # read the spectrum
+		
+	foreach $Wavelength ( @Wavelengths ) {
+		@CurSpectrum = @Spectrum;                             # create a new copy of the spectrum
+
+		# find the requested wavelength/intensity
+		until (not @CurSpectrum or $CurSpectrum[0]->[0] == $Wavelength->{wav}) { shift @CurSpectrum }
+		
+		if (not @CurSpectrum) {
+			print STDERR "\nERROR: Wavelength $Wavelengths[0]->{wav} not found in file $File!\n\n";
+			exit 2;
+		}
+
+		if ($CurSpectrum[0]->[1] < $Wavelength->{min} or $Wavelength->{max} < $CurSpectrum[0]->[1]) {
+			$Failed = 1;
+			last;
+		}
+	}
+
+	if ($Failed) { next }     # if the file failes, continue with the next on
+	else {                    # otherwise copy or move it to the directory
+		if ($Options->{m}) { move "$File.cd", $Options->{d} }
+		              else { copy "$File.cd", $Options->{d} }
+	}
+}

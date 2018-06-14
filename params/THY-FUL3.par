@@ -1,0 +1,32 @@
+  -THY-FUL3-
+# only two transitions, one close to 290 nm and the the one with lowest energy around 260nm
+# constant moment length of 1 Angstroms
+8
+        -0.003         -1.381         -0.005          1.00  # N1
+         1.220         -0.738         -0.005          1.00  # C2
+         2.298         -1.311         -0.015          1.00  # O2
+         1.136          0.640         -0.005          1.00  # N3
+         0.004          1.381          0.005          1.00  # C4
+         0.079          2.614          0.005          1.00  # O4
+        -1.214          0.645          0.005          1.00  # C5
+        -1.150         -0.688          0.005          1.00  # C6
+&TRANSITION 1->... # THY-FUL3
+   2   39359.9174       # 254.07 nm            # Transition moment 3.03, angle 15.00 to y axis
+      -0.2588      0.9659      0.0000   1.000  # Electr. mom., scale fac.
+       0.0000      0.0000      0.0000          # Magnet. mom.
+       0.00000000      0.00000000      0.00000000     -3.03067464
+      -0.25881905      0.96592583      0.00000000      3.03067464
+   2   57507.4203       # 173.89 nm            # Transition moment 5.61, angle -35.00 to y axis
+       0.5736      0.8192      0.0000   1.000  # Electr. mom., scale fac.
+       0.0000      0.0000      0.0000          # Magnet. mom.
+       0.00000000      0.00000000      0.00000000     -5.60646948
+       0.57357644      0.81915204      0.00000000      5.60646948
+&TRANSITION 2->... # THY-FUL3
+   0     00000.0000     #
+         0.0000         0.0000         0.0000  1.000  # electr. mom., scale fac..
+         0.0000         0.0000         0.0000         # magnet. mom.
+&PERMANENT MOMENTS # THY-FUL3
+   0     00000.0000     #
+         0.0000         0.0000         0.0000  1.000  # electr. mom., scale fac..
+   0     00000.0000     #
+         0.0000         0.0000         0.0000  1.000  # electr. mom., scale fac..

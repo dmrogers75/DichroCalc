@@ -1,0 +1,190 @@
+#!/usr/bin/perl  -w
+
+#######################################################################################################################
+#
+# Program:    parsetdipolemoment
+#
+# Function:   Calculates the dipolemoment of a set of monopoles for one transition of a parameter set
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3870 $, $Date: 2009-02-11 18:29:52 +0000 (Wed, 11 Feb 2009) $
+#
+# Date:       June 2007
+#
+#######################################################################################################################
+
+use strict;                         # always use this!!!
+use Data::Dumper;                   # for printing arrays and hashes
+use lib "$ENV{HOME}/bin/perllib";   # add ~/bin/perllib to the library path
+use ReadParSet;                     # to read a parameter set from the monopole file
+use GetBaseName;                    # to split a filename into base name and extension
+use VectorMath;                     # for several vector calculations
+use DebugPrint;                     # handy during debugging
+use GetParameters;                   # to handle command line parameters
+
+$Data::Dumper::Sortkeys = 1;  # print hash keys in alphabetical order
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {     # create an anonymous hash
+	f     =>  "string",
+	p     =>  "string",
+	s     =>  "string",
+	t     =>  "string",
+	perm  =>  "switch",
+};
+
+my $Options = {
+	f     =>  "$ENV{HOME}/bin/parsets.par",
+	p     =>  "NMA4FIT2",
+	s     =>  "0",
+	t     =>  "0",
+};
+
+
+my $Help = "\n" .
+"Usage:   parsetdipolemoment -t transition [-f file] [-p parset] [-perm] [-s state]\n" .
+"\n" .
+" f:    file containing the parameter set, default $Options->{f}\n" .
+" p:    name of parameter set, default $Options->{p}\n" .
+" s:    state to take, default is $Options->{s}\n" .
+" t:    transition to take, 0 = nPi*, 1 = PiPi*, default $Options->{t}\n" .
+" perm: take the permanent moment\n" . 
+"\n";
+
+####################################################################################################
+
+my ($MonopoleSet, $Monopole, $Distance, $DipoleMoment, $Angle, @Transitions, $Coord, $Trans);
+my ($CentreNeg, $CentrePos, $Moment);
+my $ParData = {};
+
+GetParameters ($Parameters, $Options, $Help);
+
+if (not -f $Options->{f}) {
+	if (-f "$Options->{f}.944") {
+		$Options->{f} = "$Options->{f}.944";
+	}
+	else {
+		print "\n$Options->{f} not found!\n\n";
+		exit 2;
+	}
+}
+
+ReadParSet ($Options->{f}, $Options->{p}, $ParData);
+
+if (defined $Options->{GivenParams}{t}) {
+	@Transitions = ($Options->{t});
+}
+else {
+	for ( 0 .. $#{$ParData->{Trans}[$Options->{s}]} ) {
+		push @Transitions, $_;
+	}
+}
+
+print "\n";
+print "Parameter Set:     $Options->{p}\n";
+print "State:             $Options->{s}\n";
+
+foreach $Trans ( @Transitions ) {
+
+	if (not $Options->{perm}) {
+		$MonopoleSet = $ParData->{Trans}[$Options->{s}][$Trans]{Monopoles};
+	}
+	else {
+		$MonopoleSet = $ParData->{Perm}[$Options->{s}][$Trans]{Monopoles};
+	}
+	
+	$DipoleMoment = 0;
+	$Angle        = 0;
+	$Distance     = 0;
+	$CentrePos    = { x => 0, y => 0, z => 0, q => 0, Counter => 0 };
+	$CentreNeg    = { x => 0, y => 0, z => 0, q => 0, Counter => 0 };
+	$Moment       = { x => 0, y => 0, z => 0 };
+	
+	foreach $Monopole ( @{$MonopoleSet} ) {
+		# print Dumper $Monopole;
+		
+		# convert the units angstrom to cm
+		# $Monopole->{x} = $Monopole->{x} * 1E-8;
+		# $Monopole->{y} = $Monopole->{y} * 1E-8;
+		# $Monopole->{z} = $Monopole->{z} * 1E-8;
+		
+		# the charges in the monopole file are in 10^-10 esu
+		# $Monopole->{q} = $Monopole->{q} * 1E-10;
+		
+		$Moment->{x} = $Moment->{x} + ( $Monopole->{x} * $Monopole->{q} );
+		$Moment->{y} = $Moment->{y} + ( $Monopole->{y} * $Monopole->{q} );
+		$Moment->{z} = $Moment->{z} + ( $Monopole->{z} * $Monopole->{q} );
+		
+		$Monopole->{x} = $Monopole->{x} * $Monopole->{q};
+		$Monopole->{y} = $Monopole->{y} * $Monopole->{q};
+		$Monopole->{z} = $Monopole->{z} * $Monopole->{q};
+		
+		if ($Monopole->{q} >= 0) {
+			# add up all positive coordinates and charges
+			$CentrePos->{x} = $CentrePos->{x} + $Monopole->{x};
+			$CentrePos->{y} = $CentrePos->{y} + $Monopole->{y};
+			$CentrePos->{z} = $CentrePos->{z} + $Monopole->{z};
+			$CentrePos->{q} = $CentrePos->{q} + $Monopole->{q};
+		}
+		else {
+			# add up all negative coordinates and charges
+			$CentreNeg->{x} = $CentreNeg->{x} + $Monopole->{x};
+			$CentreNeg->{y} = $CentreNeg->{y} + $Monopole->{y};
+			$CentreNeg->{z} = $CentreNeg->{z} + $Monopole->{z};
+			$CentreNeg->{q} = $CentreNeg->{q} + $Monopole->{q};
+		}
+	} # of foreach $Monopole
+	
+	foreach $Coord ( qw/x y z/) {
+		# divide each coordinate by the charge (negative or positive respectively)
+		$CentrePos->{$Coord} = $CentrePos->{$Coord} /  $CentrePos->{q};
+		$CentreNeg->{$Coord} = $CentreNeg->{$Coord} / -$CentreNeg->{q};
+	}
+	
+	$Distance = sqrt ( ($CentreNeg->{x} - $CentrePos->{x})**2 +
+	                   ($CentreNeg->{y} - $CentrePos->{y})**2 +
+	                   ($CentreNeg->{z} - $CentrePos->{z})**2 );
+	
+	$Moment->{Length} = sqrt ( ($Moment->{x})**2 +
+	                           ($Moment->{y})**2 +
+	                           ($Moment->{z})**2 );
+	
+	# Moment   = Debye = 10^-18 esu cm
+	# Distance = Angstrom = 1E-8 cm
+	# Charge   = 1E-10 esu
+	
+	$DipoleMoment = $Distance * $CentrePos->{q};
+	
+	# calculate the angle between the "y-axis" and the transition dipole moment
+	# the negative centre should be positioned at the origin, that makes the
+	# positive centre the tip of the vector
+	$Angle = Angle ({x=>1, y=>0, z=>0}, VecDiff ($CentrePos, $CentreNeg));
+	
+	# the moment is now in esu*cm,
+	# 1D = 10^-18 esu*cm
+	
+	print  "\n";
+	print "Transition:                  $Trans\n";
+	print "Permanent moment:          ";
+	
+	if ($Options->{perm}) { print "yes\n"  }
+	                 else { print " no\n"  }
+	
+	printf "Dipole Moment:    %12.6f  %12.6f  %12.6f  %14.6f Angstrom\n",
+	       $Moment->{x}, $Moment->{y}, $Moment->{z}, $Moment->{Length};
+	printf "Negative centre:  %12.6f  %12.6f  %12.6f  %14.6f E-10 esu\n",
+	       $CentreNeg->{x}, $CentreNeg->{y}, $CentreNeg->{z}, $CentreNeg->{q};
+	printf "Positive centre:  %12.6f  %12.6f  %12.6f  %14.6f E-10 esu\n",
+	       $CentrePos->{x}, $CentrePos->{y}, $CentrePos->{z}, $CentrePos->{q};
+	printf "Distance:         %12.3f Angstrom\n", $Distance;
+	printf "Angle to x-Axis:  %12.3f deg\n",      $Angle;
+	printf "Dipole:           %12.3f Debye\n",    $DipoleMoment;
+	
+	# printf "\n%12.3e esu*cm\n%12.3f Debye\n\n", $Moment, $Moment / 1E-18;
+	#print "\n%8.3f e*Angstrom\n%8.3f Debye\n\n", $Moment, "\n", $Moment / 1E-18;
+}
+

@@ -1,0 +1,708 @@
+#!/usr/bin/perl  -w
+
+#######################################################################################################################
+#
+# Program:    plotparset
+#
+# Function:   Reads in a parameter set, can change all values and write it back, and is able to plot all values
+#             with gnuplot
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3995 $, $Date: 2009-02-21 12:59:40 +0000 (Sat, 21 Feb 2009) $
+#
+# Date:       April 2006
+#
+#######################################################################################################################
+
+use strict;                         # always use this!!!
+use Data::Dumper;                   # for printing arrays and hashes
+use lib "$ENV{HOME}/bin/perllib";   # add ~/bin/perllib to the library path
+use ReadParSet;                     # to read a parameter set from the monopole file
+use VectorMath;                     # for several vector calculations
+use DebugPrint;                     # handy during debugging
+use GetParameters;                  # to handle command line parameters
+
+$Data::Dumper::Sortkeys = 1;    # print hash keys in alphabetical order
+# $Data::Dumper::Terse = 1;     # terse output
+# $Data::Dumper::Maxdepth = 5;  # depth of nested structure to be resolved
+
+########################################################################################################################
+# Configuration Variables
+########################################################################################################################
+
+my $StandardOutFile = ".new";      # the extension which gets added to the base name of the input file
+my $PlotInteraction = 0;           # plot the couloumb interaction
+my $MonopoleFile    = "$ENV{HOME}/bin/parsets.par";
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {                 # create an anonymous hash
+   key             => "switch",    # show the legend
+   nokey           => "switch",    # do not show the legend
+
+   labelpos        => "string",    # defines the offset of the atom labels from the actual atom position
+   cmd             => "switch",    # keep the cmd-gnuplot file after exiting gnuplot
+   o               => "string",    # write to a postscript file
+   c               => "string",    # read configuration from file
+   cw              => "string",    # write configuration to file
+   f               => "string",    # monopole file
+   t               => "string",    # define a title
+	notitle         => "switch",    # explicitly no title
+
+   view            => "string",    # defines the view (rotation around x, rotation around y)
+   size            => "string",    # sets the size of the plot, default is "1,1"
+	square          => "switch",    # forces a square shape for the plot
+   globmax         => "switch",    # whether all axes should have the same scale
+
+   offsetX         => "string",    # value which is added to the maximum X value to set the length of the axis
+   offsetY         => "string",    # value which is added to the maximum Y value to set the length of the axis
+   offsetZ         => "string",    # value which is added to the maximum Z value to set the length of the axis
+
+   xrange          => "string",    # if "true", the xRange will be set to -$Options->{xrange}:$Options->{xrange}, otherwise the maximum value is taken (what distorts the plot)
+   yrange          => "string",    # if "true", the yRange will be set to -$Options->{zrange}:$Options->{zrange}, otherwise the maximum value is taken (what distorts the plot)
+   zrange          => "string",    # if "true", the zRange will be set to -$Options->{zrange}:$Options->{zrange}, otherwise the maximum value is taken (what distorts the plot)
+   range           => "string",    # set all ranges to the given value
+   xtics           => "string",    # set the tic interval
+   ytics           => "string",    # set the tic interval
+   ztics           => "string",    # set the tic interval
+   zlabels         => "string",    # set to "false" to remove the labels along the z-axis
+	norm            => "switch",    # normalize the vectors (if some are too small or large)
+
+   atoms           => "switch",    # whether to show the atoms or not
+   bonds           => "switch",    # whether the bond lines should be printed
+
+   VM              => "switch",    # whether to show the VM vectors  (magnetic transition moment before calculation)
+   VMU             => "switch",    # whether to show the VMU vectors (electric transition moment before calculation)
+
+   state           => "string",    # "-1" for all States, "0" for Ground->1st, "1" for 1st->2nd, "01" for both and so on
+   mono            => "switch",    # whether to show the monopoles or not
+   trans           => "string",    # -1 = All transitions, 0 = only first transition, 012 = 1st, 2nd, and 3rd transition (needs to be STRING for that feature...)
+   perm            => "switch",    # show the permanent moment
+   labels          => "switch",    # show the atom labels (C1, N1, O1, ...)
+   charges         => "switch",    # show the atom charge or not
+   round           => "switch",    # round the charges which are shown as labels
+
+   colourVM        => "string",    # the colour of the VM arrow and label
+   colourVMU       => "string",    # the colour of the VMU arrow and label
+   colourPVMU      => "string",    # the colour of the permanent moment VMU arrow and label
+};
+
+my $Options = {                    # create an anonymous hash
+   f =>"$MonopoleFile",            # the default monopole file the parameter set is read from
+   key             => 1,            # whether to show the legend or not
+   labelpos        => 0.5,          # defines the offset of the atom labels from the actual atom position
+
+   state           => "-1",         # "-1" for all States, "0" for Ground->1st, "1" for 1st->2nd, "01" for both and so on
+   trans           => "0",          # -1 = All transitions, 0 = only first transition, 012 = 1st, 2nd, and 3rd transition (needs to be STRING for that feature...)
+
+   view            => "0,0",        # defines the view (rotation around x, rotation around y)
+   size            => "1,1",        # sets the size of the plot, default is "1,1"
+   globmax         => 1,            # whether all axes should have the same scale
+
+   offsetX         => 0.8,          # value which is added to the maximum X value to set the length of the axis
+   offsetY         => 0.8,          # value which is added to the maximum Y value to set the length of the axis
+   offsetZ         => 0.04,         # value which is added to the maximum Z value to set the length of the axis
+
+   colourVM        => 1,            # the colour of the VM arrow and label
+   colourVMU       => 3,            # the colour of the VMU arrow and label
+   colourPVMU      => 4,            # the colour of the permanent moment VMU arrow and label
+};
+
+
+my $Help = "\n" .
+	"Usage:   plotparset parset [Options]\n".
+	"\n" .
+	"   parset:         name of the parameter set to be plotted\n" .
+	"   -f              file containing the parameter set\n" .
+	"                   (default is $Options->{f})\n" .
+	"   -o              define an output postscript file, otherwise X11 is used\n" .
+	"   -c              Read configuration from the given file. If no extension is\n" .
+	"                   given, .cfg is tried.\n" .
+	"   -cw             write the configuration to the given file.\n" .
+	"   -t              define a title for the plot (name of the parameter set otherwise)\n".
+	"   -notitle        suppress the automatic title\n" .
+	"   -key            show the legend (default)\n" .
+	"   -nokey          do not show the legend\n" .
+	"   -labelpos       defines the offset of the labels from the actual atom position\n" .
+	"   -cmd            keep the gnuplot .cmd file (and the .xyz files) after plotting\n" .
+	"\n" .
+	"   -view x,y       defines the view (rotation around x, rotation around y)\n" .
+	"   -size           sets the size of the plot, default is 1,1\n" .
+	"   -square         force a square for the plot\n" .
+	"   -globmax        all axes should have the same scale\n" .
+	"   -Format         format string used by sprintf and printf\n" .
+	"                   (if output is exported to a spreadsheet set it to e.g. \".4f\")\n" .
+	"\n" .
+	"   -xrange x       set xrange to -x:x, otherwise use maximum value (distortion!)\n" .
+	"   -yrange y       set yrange to -y:y, otherwise use maximum value (distortion!)\n" .
+	"   -zrange z       set zrange to -z:z, otherwise use maximum value (distortion!)\n".
+	"   -range  n       set all ranges to n (any given other range is not overwritten)\n" .
+	"                   For all range definitions:    \"m\"   sets to \"-m:m\"\n" .
+	"                                                 \"m:n\" sets to \"m:n\"\n" .
+	"\n" .
+	"   -zlabels        show z-axis labels\n" .
+	"   -xtics          tic interval of x axis\n" .
+	"   -ytics          tic interval of y axis\n" .
+	"   -ztics          tic interval of z axis\n" .
+	"\n" .
+	"   -bonds          show the bonds\n" .
+	"   -atoms          show the atoms\n" .
+	"   -labels         show the atom labels (C1, N1, O1, ...)\n" .
+	"\n" .
+	"   -VM             show VM vectors  (magnetic trans. moment before calculation)\n" .
+	"   -VMU            show VMU vectors (electric trans. moment before calculation)\n" .
+	"\n" .
+	"   -state          -1 = all states, 0 = ground to 1st excitation (default), etc.\n" .
+	"   -trans          -1 = all transitions, 0 = 1st transition, 012 = 1st, 2nd, 3rd\n" .
+	"   -perm           show the permanent moments instead of the transitions\n" .
+	"   -mono           show the monopoles\n" .
+	"   -charges        show the monopole charge\n" .
+	"   -round          round the charges\n" .
+	"\n" .
+	"   -colourVM       colour of the VM arrow and label\n" .
+	"   -colourVMU      colour of the VMU arrow and label\n" .
+	"   -colourPVMU     colour of the permanent VMU arrow and label\n" .
+	"\n\n";
+
+####################################################################################################
+
+my ($File, $OutFile, @TransFiles, @PermFiles);
+my ($x, $y, $z, $MaxX, $MaxY, $MaxZ);
+my $ParData = {};
+
+GetParameters ($Parameters, $Options, $Help);
+
+# if ParSet is not given, it is read from the config file
+if ( $Options->{c}  ) { &ReadConfigFile ($Options->{c})   }
+
+# if a parameter set name is given it overwrites the one from the config file (as all other parameters)
+if (defined $Options->{rest}) {
+	$Options->{ParSet} = shift @{$Options->{rest}};
+	
+	if (@{$Options->{rest}}) {
+		print STDERR "\nERROR: The following parameters were not recognized:\n";
+		print STDERR join "\n", @{$Options->{rest}};
+		print STDERR "\n";
+		exit 1;
+	}
+}
+
+# at this time, the parameter set has already been defined and will be included in the ConfigFile
+if ( $Options->{cw} ) { &WriteConfigFile ($Options->{cw}) }
+
+if (defined $Options->{o}) {
+	if ($Options->{o} !~ m/\.ps$/) { $Options->{o} = $Options->{o} . ".ps" }
+}
+
+for ( qw/range xrange yrange zrange/) {
+	# check all range parameter, whether a colon is contained
+	# if no colon is found (-xrange x), then set it to -x:x
+	if ($Options->{$_} and $Options->{$_} !~ m/:/) {
+		$Options->{$_} = "-$Options->{$_}:$Options->{$_}";
+	}
+}
+
+if ($Options->{range}) {
+	# if one of the axis ranges is not defined, set it to the overall range parameter
+	for ( qw/xrange yrange zrange/ ) {
+		if (not $Options->{$_}) {
+			$Options->{$_} = $Options->{range};
+		}
+	}
+}
+
+if (not defined $Options->{ParSet}) {
+	print STDERR "\nERROR: No parameter set was defined!\n";
+	exit 2;
+}
+
+########################################################################################################################
+
+$MaxX = 0; $MaxY = 0; $MaxZ = 0;   # just that the variables are not undefined in the first comparison
+
+if (not -f $Options->{f}) {
+	if (-f "$Options->{f}.par") {
+		$Options->{f} = "$Options->{f}.par";
+	}
+	else {
+		print STDERR "\nERROR: $Options->{f} not found!\n\n";
+		exit 3;
+	}
+}
+
+#if (not $Options->{f}) {
+#	$Options->{f} = $Options->{ParSet};
+#	$Options->{f} = substr ($Options->{f}, 0, rindex ($Options->{f}, "."));
+#	$Options->{f} = $Options->{f} . $StandardOutFile;
+#}
+
+ReadParSet ($Options->{f}, $Options->{ParSet}, $ParData);
+
+# &ChangeData ($ParData);
+# WriteParSet ($ParData, $Options->{o});
+
+&PlotData ($ParData);
+
+#&CheckFiles (42,52);
+
+
+########################################################################################################################
+# Subroutines
+########################################################################################################################
+
+
+sub ChangeData {
+	my $ParData = shift;
+	my ($i, $Trans, $k, $Coord, $Monopole);
+	
+	for $i (0 .. $#{$ParData->{Atoms}}) {
+		for $Coord (qw/x y z/) {
+			$ParData->{Atoms}[$i]{$Coord} += 1.0;
+		}
+	}
+	
+	# loop over all transitions
+	for $i (0 .. $#{$ParData->{TransHeader}}) {
+		for $Trans (0 .. $#{$ParData->{Trans}[$i]}) {
+			
+			# loop over the coordinates of the magnetic and electric moment
+			for $Coord (qw/x y z/) {
+				#	if ( ($i == 1) and ($Trans == 1) ) { # change the value only for a specific transition
+					$ParData->{Trans}[$i][$Trans]{VM} {$Coord} += 1.0;
+					$ParData->{Trans}[$i][$Trans]{VMU}{$Coord} += 1.0;
+					#}
+			}
+			
+			# loop over the coordinates and charges of the monopoles
+			foreach $Monopole (@{$ParData->{Trans}[$i][$Trans]{Monopoles}}) {
+				# to centre the monopoles of NMA4FIT2 around the nitrogen atom
+				# N is atom number 2, the AtomDistance is checked since some of the monopoles
+				# actually belong to the "non-existent" hydrogen atom
+#				if ( $Monopole->{Atom} == 2 and $Monopole->{AtomDist} < 0.3) {
+#				  $Monopole->{x} -= 0.00569312;
+#				  $Monopole->{y} += 0.0307735;
+#				}
+				
+				for $Coord (qw/x y z/) {
+					$Monopole->{$Coord} += 1.0;
+				}
+				
+#				if ( ($i == 1) and ($Trans == 1) ) { # change the value only for a specific transition
+#					$Monopole->{q} *= 1.0; # the charge of the monopole
+#				}
+			}
+			
+		} # of for $Trans (0 .. $#{$ParData->{Trans}[$i]})
+	} # of for $i (1 .. $#TransHeader)
+	
+	# loop over the permanent moments
+	for $Trans (0 .. $#{$ParData->{Perm}[0]}) {
+		
+		for $Coord (qw/x y z/) {
+			$ParData->{Perm}[0][$Trans]{VMU}{$Coord} += 1.0;
+		}
+		
+		for $k (0 .. $#{$ParData->{Perm}[0][$Trans]{Monopoles}}) {
+			for $Coord (qw/x y z/) {
+				$ParData->{Perm}[0][$Trans]{Monopoles}[$k]{$Coord} += 1.0;
+			}
+		}
+	
+#		$ParData->{Perm}[0][$Trans]{Monopoles}[$k]{q} *= 1.0; # the charge of the monopole
+	}
+} # of sub ChangeData
+
+
+sub PlotData { # creates the command file for gnuplot and runs it
+	my $ParData = shift;
+	my ($Label, $File, $i, $Position, $Offset, $PlotAtoms, $CurBaseName);
+	my ($Atom, $State, $Transition, $Index, $CAtom, $NAtom, $OAtom);
+	my ($CurMono, $MonoColour);
+	
+	open PLOT, ">$Options->{ParSet}.cmd";
+	
+	print PLOT "set encoding iso_8859_1\n";
+	
+	if ($Options->{o}) {
+		print PLOT "set terminal postscript enhanced colour solid\n";
+		print PLOT "set output \"$Options->{o}\"\n";
+	}
+	
+	$MaxX = $MaxX + $Options->{offsetX};
+	$MaxY = $MaxY + $Options->{offsetY};
+	$MaxZ = $MaxZ + $Options->{offsetZ};
+	
+	if ($Options->{globmax}) {
+		if    ( ($MaxX > $MaxY) and ($MaxX > $MaxZ) ) { $MaxY = $MaxX; $MaxZ = $MaxX }
+		elsif ( ($MaxY > $MaxX) and ($MaxY > $MaxZ) ) { $MaxX = $MaxY; $MaxZ = $MaxY }
+		                                         else { $MaxX = $MaxZ; $MaxY = $MaxZ }
+	}
+	
+	if ($Options->{xrange}) { print PLOT "set xrange[$Options->{xrange}]\n" }   # default z axis range
+	                   else { print PLOT "set xrange[-$MaxX:$MaxX]\n"       }   # dynamic z axis range
+	if ($Options->{yrange}) { print PLOT "set yrange[$Options->{yrange}]\n" }   # default z axis range
+	                   else { print PLOT "set yrange[-$MaxY:$MaxY]\n"       }   # dynamic z axis range
+	if ($Options->{zrange}) { print PLOT "set zrange[$Options->{zrange}]\n" }   # default z axis range
+	                   else { print PLOT "set zrange[-$MaxZ:$MaxZ]\n"       }   # dynamic z axis range
+	
+	print PLOT "set zeroaxis ls 7\n";
+	
+	foreach ( qw/xtics ytics ztics/ ) {
+		if (not defined $Options->{$_}) { $Options->{$_} = "" }
+		print PLOT "set $_ border nomirror norotate $Options->{$_}\n";
+	}
+	
+	print PLOT "\n";
+	
+	print PLOT "set xlabel \"x / {\305}\"\n";
+	print PLOT "set ylabel \"y / {\305}\"\n";
+	
+	# print PLOT "set zlabel \"z / \"\n";
+
+	print PLOT "set mxtics 0.5\n";
+	print PLOT "set mytics 0.5\n";
+	print PLOT "set mztics 0.5\n";
+	print PLOT "\n";
+	
+	if (not $Options->{zlabels}) { print PLOT "set noztics\n" }
+	
+	print PLOT "set ticslevel 0\n";
+	
+	if ($Options->{square}) {
+		print PLOT "set size square $Options->{size}\n";
+	}
+	else {
+		print PLOT "set size $Options->{size}\n";
+	}
+	
+	if ($Options->{t}) {
+		print PLOT "set title \"$Options->{t}\"\n";
+	}
+	elsif (not $Options->{notitle}) {
+		print PLOT "set title \"$Options->{ParSet}\"\n";
+	}
+	
+	print PLOT "set view $Options->{view}\n";
+	print PLOT "set grid\n";  # show a grid (dotted lines at every major tic)
+	
+	if ($Options->{key}) {
+		print PLOT "set key right top Left reverse samplen 2 spacing 1.25 title \"\" nobox\n";
+	}
+	
+	if ($Options->{nokey}) {
+		print PLOT "set nokey\n";
+	}
+	
+	print PLOT "\n";
+	
+	open (ATOMS, ">$Options->{ParSet}-atoms.xyz");
+	
+	for $Atom (0 .. $#{$ParData->{Atoms}} ) {
+		&GetXYZ ($ParData->{Atoms}[$Atom]);
+		if ($Options->{atoms}) { print ATOMS "$x\t$y\t$z\n" }
+		$PlotAtoms = 1;
+		
+		if ($#{$ParData->{Atoms}} == 2) { # if it's three atoms, it's a peptide group, otherwise e.g. side chain or CT
+			if		($Atom == 0) {
+				$Label = "C";
+				$Position = "right";
+				$Offset = "offset " . $Options->{labelpos} * 2.5 . ", $Options->{labelpos}";
+				$CAtom = "$x, $y, $z"; # save the C atom coordinates as string for the drawing of the bond
+			}
+			elsif ($Atom == 1) {
+				$Label = "O";
+				$Position = "left";
+				$Offset = "offset $Options->{labelpos}, $Options->{labelpos}";
+				$OAtom = "$x, $y, $z"; # save the O atom coordinates as string for the drawing of the bond
+			}
+			elsif ($Atom == 2) {
+				$Label = "N";
+				$Position = "right";
+				$Offset = "offset -$Options->{labelpos}, $Options->{labelpos}";
+				$NAtom = "$x, $y, $z"; # save the N atom coordinates as string for the drawing of the bond
+			}
+		}
+		else { # if it is not a peptide group
+			$Position = "right";
+			$Offset = "offset 0.5";
+			$Label = $ParData->{Atoms}[$Atom]{Comment};
+			$Label =~ s/^[\s#]+//g; # remove leading blanks and hash symbols
+		}
+			
+		if ($Options->{atoms}) { print ATOMS "$x\t$y\t$z\n" }
+		
+		if ($Options->{labels}) {
+			print PLOT "set label \"$Label\" at  $x, $y, $z point lt 1 pt 1 $Offset \n"
+		}
+	} # of for $Atom (0 .. $#{$ParData->{Atoms}})
+	
+	close ATOMS;
+	
+	if ($Options->{bonds}) {
+		print PLOT "set arrow from $NAtom to $CAtom nohead lt 7 lw 3\n"; # draw the bond line from N to C
+		print PLOT "set arrow from $CAtom to $OAtom nohead lt 7 lw 3\n"; # draw the bond line from C to O
+	}
+	
+	
+	if ($Options->{VM}) {
+		for $State (0 .. $#{$ParData->{Trans}} ) {
+			if ( ($Options->{state} == -1) or ($State =~ m/[$Options->{state}]/) ) {
+				
+				for $Transition (0 .. $#{$ParData->{Trans}[$State]}) {
+					
+					if ( ($Transition == -1) or ($Transition =~ m/[$Options->{trans}]/) ) {
+						&GetXYZ ($ParData->{Trans}[$State][$Transition]{VM});
+						
+						# print PLOT "set arrow from $OAtom to $x, $y, $z filled lt ",$Options->{colourVM}," lw 1\n";
+						print PLOT "set arrow from 0, 0, 0 to $x, $y, $z filled lt ",$Options->{colourVM}," lw 1\n";
+						$Offset =  "offset -" . $Options->{labelpos} * 5 . ", $Options->{labelpos}";
+						print PLOT "set label \"VM $State $Transition\" at $x, $y, $z left textcolor lt ",$Options->{colourVM}," point lt 0 pt 0 $Offset\n";
+					}
+				}
+			}
+		}
+	}
+	
+	if ($Options->{VMU}) {
+		for $State (0 .. $#{$ParData->{Trans}} ) {
+			if ( ($Options->{state} == -1) or ($State =~ m/[$Options->{state}]/) ) {
+				
+				for $Transition (0 .. $#{$ParData->{Trans}[$State]}) {
+					if ( ($Options->{trans} == -1) or ($Transition =~ m/[$Options->{trans}]/) ) {
+						&GetXYZ ($ParData->{Trans}[$State][$Transition]{VMU});
+
+						if ($Options->{norm}) {
+							my $Hash =  {x => $x, y => $y, z => $z};
+							Normalize ($Hash);
+							$x = $Hash->{x}; $y = $Hash->{y}; $z = $Hash->{z};
+						}
+						
+						# print PLOT "set arrow from $OAtom to $x, $y, $z filled lt ",$Options->{colourVMU}," lw 1\n";
+						print PLOT "set arrow from 0, 0, 0 to $x, $y, $z filled lt ",$Options->{colourVMU}," lw 1\n";
+						$Offset =  "offset -" . $Options->{labelpos} * 5 . ", $Options->{labelpos}";
+						# print PLOT "set label \"VMU $State $Transition\" at $x, $y, $z left norotate textcolor lt ",$Options->{colourVMU}," point lt 0 pt 0 $Offset\n";
+					}
+				}
+			}
+		}
+	}
+	
+	if ($Options->{mono}) {
+		print PLOT "set pointsize 0.2\n";
+		
+		for $State (0 .. $#{$ParData->{Trans}} ) {
+			
+			if ( ($Options->{state} == -1) or ($State =~ m/[$Options->{state}]/) ) {
+				
+				for $Transition (0 .. $#{$ParData->{Trans}[$State]}) {
+					if ( ($Options->{trans} == -1) or ($Transition =~ m/[$Options->{trans}]/) ) {
+						open (TRANS, ">$Options->{ParSet}-trans-$State-$Transition.xyz");
+						push @TransFiles, "$Options->{ParSet}-trans-$State-$Transition.xyz";
+						my $xPos = 1;
+						my $yPos = 1;
+						my $Position = "left";
+						
+						foreach $CurMono (@{$ParData->{Trans}[$State][$Transition]{Monopoles}}) {
+							&GetXYZ ($CurMono);
+							
+							# to show only monopoles above the xy plane
+							# if ($z < 0) { next }
+							
+							if ($Options->{mono}) {
+								if ($CurMono->{q} == 0) { $MonoColour = -1 } # colour black
+								if ($CurMono->{q} >  0) { $MonoColour =  1 } # colour blue
+								if ($CurMono->{q} <  0) { $MonoColour =  3 } # colour red
+								
+								print PLOT "set label \"\" at $x, $y, $z point lt $MonoColour pt 7\n";
+							}
+							
+							if ($Options->{charges}) {
+								$Label = $CurMono->{q};
+								
+								if ($Options->{round}) { $Label = sprintf ("%8.3f", $Label) }
+								if ($Position eq "left") { $Position = "right" }
+								                   else  { $Position = "left" }
+								$Offset =  "offset -" . $xPos * $Options->{labelpos} * 5 . ", " . $yPos * $Options->{labelpos};
+								# print PLOT "set label \"$Label\" at $x, $y, $z $Position textcolor lt $Options->{colourVM} point lt 0 pt 0 $Offset\n";
+								print PLOT "set label \"$Label\" at $x, $y, $z $Position textcolor lt $Options->{colourVM} nopoint $Offset\n";
+								$xPos = $xPos * 1;
+								$yPos = $yPos * 1;
+							}
+						}
+						
+						close TRANS;
+					}
+				}
+			} # of if ( ($Options->{state} == -1) or ($State =~ m/[$Options->{state}]/) )
+		} # of for $State (0 .. $#{$ParData->{Transitions}} )
+	} # of if ($Options->{mono})
+	
+	if ($Options->{perm}) {
+		if ($Options->{mono}) {
+			for $Transition (0 .. $#{$ParData->{Perm}[0]}) {
+				open (PERM, ">$Options->{ParSet}-perm-$Transition.xyz");
+				push @PermFiles, "$Options->{ParSet}-perm-$Transition.xyz";
+				
+				foreach (@{$ParData->{Perm}[0][$i]{Monopoles}}) {
+					&GetXYZ ($_);
+					print PERM "$x\t$y\t$z\n";
+				}
+				
+				close PERM;
+			}
+		}
+		
+		if ($Options->{VMU}) {
+			for $Transition (0 .. $#{$ParData->{Perm}[0]}) {
+				&GetXYZ ($ParData->{Perm}[0][$Transition]{VMU});
+				
+				# print PLOT "set arrow from $OAtom to $x, $y, $z filled lt ", $Options->{colourPVMU}," lw 1\n";  # "+1" because line type 0 is only dotted
+				print PLOT "set arrow from 0, 0, 0 to $x, $y, $z filled lt ", $Options->{colourPVMU}," lw 1\n";  # "+1" because line type 0 is only dotted
+				$Offset =  "offset -" . $Options->{labelpos} * 5 . ", $Options->{labelpos}";
+				print PLOT "set label \"Perm VMU $Transition\" at $x, $y, $z left textcolor lt ", $Options->{colourPVMU}," point lt 0 pt 0 $Offset\n";
+			}
+		}
+	} # of if ($Options->{perm})
+	
+	
+	print PLOT "show label\n";
+	
+	open (DUMMY, ">$Options->{ParSet}-dummy.xyz");
+	print DUMMY "0\t0\t0\n"; # dummy atom to avoid an error message, if only vectors should be printed (splot MUST be executed for gnuplot to be started)
+	close DUMMY;
+	
+	print PLOT "splot \"$Options->{ParSet}-dummy.xyz\" notitle with points lt 0 pt 0 ";
+	
+	if ($PlotAtoms) { print PLOT ", \"$Options->{ParSet}-atoms.xyz\" title \"atoms\" with points lt 3 pt 7" }
+	
+	$i = 1;
+	foreach $File (@TransFiles) {
+		$CurBaseName = $File;
+		$CurBaseName =~ s/\.xyz//;
+		
+		# print PLOT ", \"$File\" title \"$CurBaseName\" with points $i";
+		print PLOT ", \"$File\" title \"$CurBaseName\" with points lt 0 pt 0";
+		++$i;
+	}
+	
+	$i = 1;
+	foreach $File (@PermFiles) {
+		$CurBaseName = $File;
+		$CurBaseName =~ s/\.xyz//;
+		
+		print PLOT ", \"$File\" title \"$CurBaseName\" with points $i";
+		++$i;
+	}
+	
+	if (not $Options->{o}) { print PLOT "\npause -1\n" }
+	print PLOT "\n";
+	close PLOT;
+	
+	system ("gnuplot $Options->{ParSet}.cmd");
+	
+	if (not $Options->{cmd}) {
+		system ("rm -rf $Options->{ParSet}-dummy.xyz");
+		system ("rm -rf $Options->{ParSet}-atoms.xyz");
+		
+		foreach $File (@TransFiles) { system ("rm -rf $File") }
+		foreach $File (@PermFiles)  { system ("rm -rf $File") }
+	}
+
+	if (not $Options->{cmd}) {
+		system "rm -rf $Options->{ParSet}.cmd";
+	}
+} # of sub PlotData
+
+
+sub CheckFiles { # to compare the input and outfile and check the changes
+	my $Start = shift;
+	my $End   = shift;
+	my (@Content, $i);
+	
+	print "\n\n---------------------------------------------------------------------\n";
+	open FILE, "<$OutFile";
+	@Content = <FILE>;
+	close FILE;
+	for $i ($Start .. $End) { print $Content[$i] }
+	
+	print " - - - - \n";
+	
+	open FILE, "<$Options->{f}";
+	@Content = <FILE>;
+	close FILE;
+	for $i ($Start .. $End) { print $Content[$i] }
+	
+	print "\n\n\n";
+	print "---------------------------------------------------------------------\n";
+} # of sub CheckFiles
+
+
+sub GetXYZ { # sets the global xyz variables
+	my $Hash = shift;
+		
+	$x = $Hash->{x};
+	$y = $Hash->{y};
+	$z = $Hash->{z};
+} # of sub GetXYZ
+
+
+sub ReadConfigFile {
+	my $FileName = shift;
+	my (@Content, @Fields, $Line);
+	
+	if (not -f $FileName) {
+		if (-f "$FileName.cfg") { $FileName = "$FileName.cfg" }
+		else {
+			print STDERR "\nConfiguration file $FileName not found!\n\n";
+			exit 4;
+		}
+	}
+	
+	open (CONFIG, "<$FileName") or die "Idiot!";
+	@Content = <CONFIG>;
+	chomp @Content;
+	close CONFIG;
+	
+	print "\nReading configuration from $FileName...\n";
+	
+	while ( @Content ) {
+		$Line = shift @Content;
+		
+		if ($Line =~ m/^#/) { next }
+		else {
+			$Line =~ s/^\s+|\s+$//g;
+			if ($Line eq "") { next }
+			@Fields = split /\t+/, $Line;
+			$Options->{$Fields[0]} = $Fields[1];
+		}
+	}
+} # of sub ReadConfigFile
+
+
+sub WriteConfigFile {
+	my $FileName = shift;
+	my ($Key);
+	
+	if (not $FileName) { return }
+	if ($FileName !~ m/\.cfg$/) { $FileName = "$FileName.cfg" }
+	
+	print "\nWriting configuration to $FileName...\n";
+	open (CONFIG, ">$FileName");
+	print CONFIG "#######################################################################################################################\n";
+	print CONFIG "# Configuration variables\n";
+	print CONFIG "#######################################################################################################################\n";
+	print CONFIG "\n";
+	
+	foreach $Key ( sort keys %{$Options} ) {
+		if ($Key eq "rest") { next } # the "rest" has already been saved in Options->{ParSet}
+		if ($Key eq "cw"  ) { next } # inculding this would then always save the config file again
+		
+		print CONFIG "$Key\t$Options->{$Key}\n";
+	}
+	
+	close CONFIG;
+} # of sub WriteConfigFile
+

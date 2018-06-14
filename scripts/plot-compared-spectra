@@ -1,0 +1,119 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    plot-compared-spectra
+#
+# Function:   Plots spectra with certain extensions into one graph, e.g. in a folder with the nma,
+#             wdy and exp cd spectrum, one can request a comparison of the nma and wdy spectra for
+#             for each protein
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 2945 $, $Date: 2008-04-28 17:13:10 +0100 (Mon, 28 Apr 2008) $
+#
+# Date:       November 2006
+#
+####################################################################################################
+
+use strict;                        # always use this!!!
+use lib "$ENV{HOME}/bin/perllib";  # add ~/bin/perllib to the library path
+use Data::Dumper;                  # for easy printout of arrays and hashes
+use GetParameters;                 # to parse the command line parameters
+use DebugPrint;                    # handy during debugging
+
+my ($File, @AllFiles, @Files, $CurFile, $CurBaseName, $OldBaseName, $Ext, $Command, $i, $Plot);
+
+####################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {};
+   $Parameters->{f} = "list";
+   $Parameters->{e} = "list";
+
+my $Options = {};
+
+my $Help = "\n" .
+           "Usage:   plot-compared-spectra file1 [file2] [...] [-e exp.cd nma.cd wdy.cd]\n\n" .
+           "All filenames are chopped at the first dot in the filename:\n" .
+           "4mbn.nma.cd => 4mbn\n\n" .
+
+           "Same base names are regarded as a group. If the filename ends with one of\n" .
+           "of the specified extensions it is added to the plotted graph until a new\n" .
+           "base name is found.\n" .
+           "The sequence of the given extensions is maintained, i.e. if exp.cd is the first\n" .
+           "defined extension, then it will also be the first one plotted in the graph.\n\n" .
+
+           "If no extensions are defined, all members of a group are plotted into one\n" .
+           "figure (e.g. 4mbn.nma.cd, 4mbn.wdy.cd, 4mbn.exp.cd).\n" .
+
+           "\n\n";
+
+####################################################################################################
+
+GetParameters ($Parameters, $Options, $Help);
+
+if (not $Options->{rest}) {
+	print "\nNo files have been specified!\n\n$Help";
+	exit 1;
+}
+
+$OldBaseName = 0;
+$Command = "plotspectrum ";
+
+foreach $File ( @{$Options->{rest}} ) {
+	# copy everything before the first dot
+	$CurBaseName = substr ($File, 0, index ($File, "."));
+
+	# if a new group just began, plot the old group
+	if ($OldBaseName and ($CurBaseName ne $OldBaseName)) {
+		foreach $Ext (@Files) {
+			# check, whether the element exists (i.e. is not undef)
+			# that might happen, if only a file with extension 2 exists
+			# but none with extension 1
+			if ($Ext) { $Command = $Command . $Ext . " "	}
+		}
+
+		print "Processing $OldBaseName...\n";
+		system ("$Command -o $OldBaseName.comp.cd.ps");
+		$Command = "plotspectrum ";
+		@Files = ();
+		$Plot = 0;
+	}
+
+	if (defined $Options->{e}) {
+		# foreach index $i in the given extensions-array
+		for $i (0 .. $#{$Options->{e}}) {
+			$Ext = $Options->{e}[$i];
+
+			# if the filename ends with one of the extensions
+			if ($File =~ m/\.$Ext$/) {
+				# add to the same Index into the Files array
+				# to make sure, that the files are plotted in the same
+				# order as they've been given to the program
+				$Files[$i] = $File;
+				$Plot = 1;
+			}
+		}
+	}
+	else {
+		$Command = $Command . $File . " ";
+		$Plot = 1;
+	}
+
+	$OldBaseName = $CurBaseName;
+}
+
+# execute the command line for the last file, if there was something
+if ($Plot) {
+	foreach $Ext (@Files) {
+		# check, whether the element exists (i.e. is not undef)
+		# that might happen, if only a file with extension 2 exists
+		# but none with extension 1
+		if ($Ext) { $Command = $Command . $Ext . " "	}
+	}
+
+	print "Processing $OldBaseName...\n";
+	system ("$Command -o $OldBaseName.comp.cd.ps");
+}

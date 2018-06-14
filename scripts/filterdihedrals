@@ -1,0 +1,128 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    filterdihedrals
+#
+# Function:   Filters PDB files according to their dihedral angles
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3931 $, $Date: 2009-02-12 02:13:03 +0000 (Thu, 12 Feb 2009) $
+#
+# Date:       October 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use GetParameters;                   # to handle command line parameters
+use File::Copy;                      # to copy and move files
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {     # create an anonymous hash
+	d => "string",
+	a => "list*",
+	m => "switch",
+	v => "switch",
+};
+
+my $Options = {       # create an anonymous hash
+	d => "clustered",
+};
+
+my $Help = "\n" .
+"Usage:   filterdihedrals *.pdb -a res ang min max [res ang min max] [...]\n" .
+"                                                  [-d outputdir]    [-m]\n" .
+"\n" .
+"      -d   define an output directory, where the matching files are copied to\n" .
+"      -m   move the files instead of copying them\n" .
+"      -v   verbose mode\n" .
+"      -a   define the residue, angle and min/max value of it:\n" .
+"           res: 1 = first residue, 2 = second residue, ...\n" .
+"           ang: phi, psi, chi1, chi2 or omega\n" . 
+"           min, max: numbers between 0 .. 180\n" .
+"\n";
+
+####################################################################################################
+
+my ($File, @Output, @Fields, @Angles, $Angle, $CurAngle, $Failed);
+
+
+GetParameters ($Parameters, $Options, $Help);
+
+if (not $Options->{rest}) {
+	print STDERR "\nERROR: No input files given!\n\n";
+	exit 1;
+}
+
+if (scalar @{$Options->{a}} % 4 != 0) {
+	print STDERR "\nERROR: Number of item given via -a not dividable by four!\n\n";
+	exit 2;
+}
+
+# split up the -a parameter
+while ( @{$Options->{a}} ) {
+	my $Angle = {};
+	$Angle->{res} = shift @{$Options->{a}};
+	$Angle->{ang} = shift @{$Options->{a}};
+	$Angle->{min} = shift @{$Options->{a}};
+	$Angle->{max} = shift @{$Options->{a}};
+
+	if    ($Angle->{ang} eq "phi")   { $Angle->{col} = 2 }
+	elsif ($Angle->{ang} eq "psi")   { $Angle->{col} = 3 }
+	elsif ($Angle->{ang} eq "chi1")  { $Angle->{col} = 4 }
+	elsif ($Angle->{ang} eq "chi2")  { $Angle->{col} = 5 }
+	elsif ($Angle->{ang} eq "omega") { $Angle->{col} = 6 }
+	else {
+		print STDERR "\nERROR: Angle $Angle->{ang} could not be interpreted.\n\n";
+		exit 3;
+	}
+	
+	push @Angles, $Angle;
+}
+
+if (not -d $Options->{d}) { mkdir $Options->{d} }
+
+foreach $File ( @{$Options->{rest}} ) {
+	$File =~ s/\.pdb$//;                                     # remove the extension
+	$Failed = 0;
+	print "\n$File\n";
+	
+	# determine the dihedral angles
+	@Output = `dihedrals $File.pdb`;                         # grab the output from dihedrals
+	until ($Output[0] =~ m/Phi.+Psi/) { shift @Output }      # remove all lines before the first angle
+	
+	# the header line is still there (index 0), 1st residue thus has index 1, etc.
+	foreach $Angle ( @Angles ) {
+		$Output[$Angle->{res}] =~ s/^\s+//;                   # remove leading blanks of the line to be used
+		@Fields = split /[\s\t]+/, $Output[$Angle->{res}];    # split the requested line into columns
+		$CurAngle = $Fields[$Angle->{col}];						   # select the requested angle from the output
+
+		printf "%5s %8.2f %8.2f %8.2f ", $Angle->{ang}, $CurAngle, $Angle->{min}, $Angle->{max};
+		
+		if ($CurAngle < $Angle->{min} or $Angle->{max} < $CurAngle) {
+			$Failed = 1;
+			print "FAILED\n";
+			last;
+		}
+		else {
+			print "OK\n";
+		}
+	}
+
+	if ($Failed) { next }     # if the file failes, continue with the next one
+	else {                    # otherwise copy or move it to the directory
+		if ($Options->{m}) { move "$File.pdb", $Options->{d} }
+		              else { copy "$File.pdb", $Options->{d} }
+	}
+}
+
+print "\n";

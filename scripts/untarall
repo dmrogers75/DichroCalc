@@ -1,0 +1,34 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    untarall
+#
+# Function:   Untars all given tar archives (tar xvzf *.tar.gz does not work)
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 2945 $, $Date: 2008-04-28 17:13:10 +0100 (Mon, 28 Apr 2008) $
+#
+# Date:       November 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+
+if (not @ARGV) {
+	print "\nUsage:   untarall *.tar.gz\n\n";
+	exit 1;
+}
+
+foreach ( @ARGV ) {
+	print "Untaring $_...\n\n";
+	system "tar xvzf $_";
+	print "\n=====================================";
+}
+
