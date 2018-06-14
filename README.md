@@ -23,10 +23,16 @@ dichrocalc/src/        DichroCalc .cpp source code files.
 documentation/         the DichroCalc documentation.
 
 
+LICENSE                the GNU General Public License v3.0.
+
+
 params/                a directory containing the parameter sets. The directory can be placed in ~/bin.
 
 
 perllib/               a directory containing libraries required for the perl scripts (in ./scripts/).
+
+
+REFERENCES	       a file listing the references you should cite if you present any data in a publication.
 
 
 scripts/               a directory containing various perl scripts.
