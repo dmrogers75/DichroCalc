@@ -1,0 +1,104 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    averagespectra
+#
+# Function:   Adds up all intentisties and divides by the amount of the spectra
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3857 $, $Date: 2009-02-11 16:23:56 +0000 (Wed, 11 Feb 2009) $
+#
+# Date:       December 2006
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use GetParameters;                 # to parse the command line parameters
+use ReadSpectrum;                  # to read in spectra
+use GetBaseName;                   # to split a filename into base name and extension
+
+
+####################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {
+   o    => "string",
+	rest => "stringlist[2,]*",
+};
+
+my $Options = {};
+
+my $Help = "\nUsage:   averagespectra file1 file2 [...] [-o OutFile]\n\n";
+
+####################################################################################################
+
+my ($File, $BaseName, $Extension, @AllSpectra, $OutFile);
+
+GetParameters ($Parameters, $Options, $Help);
+
+if ($Options->{o}) {
+	$OutFile = $Options->{o};
+}
+else {
+	# if no output file is given, the base name of the first file is used
+	$OutFile = $Options->{rest}[0];
+	($BaseName, $Extension) = SplitFileName ($OutFile);
+	$OutFile = $BaseName . ".avg.$Extension";
+}
+
+foreach $File ( @{$Options->{rest}} ) {
+	if (-f $File) {
+		push @AllSpectra, $File;
+	}
+	else {
+		print STDERR "\nERROR: File $File not found!\n\n";
+		exit 2;
+	}
+}
+
+&AverageSpectra (\@AllSpectra, $OutFile);
+
+
+####################################################################################################
+# Subroutines
+####################################################################################################
+
+sub AverageSpectra {
+	my $AllSpectra = shift;
+	my $OutFile  = shift;
+
+	my (@CurSpectrum, @SumSpectrum, $File, $Amount, $Point);
+
+	$Amount = scalar @{$AllSpectra};
+
+	foreach $File (@{$AllSpectra}) {
+		@CurSpectrum = ReadSpectrum ($File);
+
+		for $Point (0 .. $#CurSpectrum) {
+			if (not defined $SumSpectrum[$Point]) {
+				my @NewPoint = ($CurSpectrum[$Point]->[0], 0);
+				$SumSpectrum[$Point] = \@NewPoint;
+			}
+
+			$SumSpectrum[$Point]->[1] = $SumSpectrum[$Point]->[1] + $CurSpectrum[$Point]->[1];
+		}
+	}
+
+	for $Point (0 .. $#SumSpectrum) {
+		$SumSpectrum[$Point]->[1] = $SumSpectrum[$Point]->[1]/$Amount;
+	}
+
+	open FILE, ">$OutFile";
+	for $Point (0 .. $#SumSpectrum) {
+		print FILE $SumSpectrum[$Point]->[0], "\t", $SumSpectrum[$Point]->[1], "\n";
+	}
+	close FILE;
+} # of sub AverageSpectra

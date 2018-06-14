@@ -1,0 +1,88 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    atomlocations
+#
+# Function:   Filters out only specific atom locations from a PDB
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 2945 $, $Date: 2008-04-28 17:13:10 +0100 (Mon, 28 Apr 2008) $
+#
+# Date:       August 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use ParsePDB;
+use GetParameters;                   # to handle command line parameters
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {     # create a hash reference
+	l  => "string*",
+	o  => "string",
+};
+
+my $Options = {       # create a hash reference
+};
+
+my $Help = "\n" .
+"Usage:   atomloactions file1 [file2] [...]\n" .
+"         -o              to define an output file\n" .
+"         -l A|B|First|   configures which atom location to take\n" .
+"                         A, B, ... will retrieve ONLY atoms with those labels\n" .
+"                         First will retrieve atom with label A and without any label\n" .
+"\n";
+
+####################################################################################################
+
+my ($File, $PDB, $OutFile);
+
+GetParameters ($Parameters, $Options, $Help);
+
+if (not $Options->{rest}) {
+	print STDERR "\nERROR: No files given to process.\n\n";
+	exit 1;
+}
+
+if ($Options->{o} and scalar @{$Options->{rest}} > 1) {
+	print STDERR "\nERROR: Only one file can be processed, if an output filename is given.\n\n";
+	exit 2;
+}
+
+while ( @{$Options->{rest}} ) {
+	$File = shift @{$Options->{rest}};
+	print "Processing $File...\n";
+
+	# if the file is not found (including the added extension .pdb)
+	if (not -f $File) {
+		if (not -f "$File.pdb") {
+			print STDERR "\nERROR: File $File not found!\n\n";
+			exit 3;
+		}
+	}
+
+	$File =~ s/\.pdb$//;
+
+	# if no output file is given, add the used location to the file name
+	if (not $Options->{o}) { $Options->{o} = "$File.$Options->{l}.pdb" }
+
+	$PDB = ParsePDB->new (FileName => $File);
+	$PDB->Parse;
+
+	$Options->{l} = uc $Options->{l};
+	
+	$PDB->RemoveAtomLocations (AtomLocations => $Options->{l});
+
+	$PDB->Write (FileName => $Options->{o});
+}
+

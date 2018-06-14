@@ -1,0 +1,172 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    shiftspectrum
+#
+# Function:   Shifts a spectrum along the x axis
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3473 $, $Date: 2008-10-27 05:44:35 +0000 (Mon, 27 Oct 2008) $
+#
+# Date:       October 2008
+#
+####################################################################################################
+
+use strict;                         # always use this!!!
+use lib "$ENV{HOME}/bin/perllib";   # add ~/bin/perllib to the library path
+use Data::Dumper;                   # for easy output of arrays and hashes
+use ReadSpectrum;                   # for reading in spectra
+use GetParameters;                  # to parse the command line parameters
+use DebugPrint;                     # useful during debugging to dump arrays and hashes
+
+####################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {                  # create an anonymous hash
+	rest   => "filelist[1]*",        # the file to process
+   o      => "string",              # define an output file
+	s      => "real",                # define the shift
+	revert => "switch",              # to revert the shift in a file
+};
+
+my $Options = {                     # create an anonymous hash
+};
+
+my $Help = "\n" .
+   "Usage:   scalespectrum file -o outfile [-s shift] [-revert]\n" .
+   "\n" .
+	"   -s       the shift about which the spectrum is shifted along the x axis\n" .
+   "   -o       define an output file (otherwise the input file is overwritten)\n" .
+	"   -revert  to revert the shift previously applied to a file\n" .
+   "\n\n";
+
+####################################################################################################
+
+my (@AllFiles, $File, $OutFile, @Content, @Comments, $Line, $Shift);
+my ($Params, $Maximum, $RefMaximum);
+
+GetParameters ($Parameters, $Options, $Help);
+
+if (not $Options->{rest}) {
+	print STDERR "\nERROR: No files defined to process!\n\n";
+	exit 10;
+}
+
+if (not $Options->{s} and not $Options->{revert}) {
+	print STDERR "\nERROR: Either -s or -revert must be given.\n\n";
+	exit 12;
+}
+
+$File = shift @{$Options->{rest}};
+
+if ($Options->{o}) { $OutFile = $Options->{o} }
+					else { $OutFile = $File         }
+
+print "Processing $File ... ";
+
+@Comments = &ReadComments ($File);
+
+if ($Options->{revert}) {
+	if (not grep /# SHIFT/, @Content) {
+		print "Could not revert file $File, no \"# SHIFT\" entry found.\n";
+		next;
+	}
+	
+	my @OtherComments;   # to keep everything that is not a SHIFT comment
+	
+	# Revert all the previous scales. The "# SHIFT" comments are discarded then (there
+	# is no @Comment array given to &Scale) and all other comments are saved in the
+	# array @OtherComments and are added to the file afterwards
+	foreach $Line ( @Comments ) {
+		$Line =~ s/^\s+//g;   # remove leading spaces
+		
+		if ($Line =~ m/^# SHIFT/) {
+			my @Fields = split /\s+/, $Line;
+			$Shift = -$Fields[2];
+			&Shift ($File, $OutFile, $Shift);
+		}
+		else {
+			# keep all comments which are not SCALE commands
+			push @OtherComments, $Line;
+		}
+	}
+	
+	if (@OtherComments) {
+		print "Adding other comments";
+		
+		open FILE, "<$File" or die "ERROR: Could not open $File: $!";
+		@Content = <FILE>;
+		close FILE;
+		
+		push @Content, @OtherComments;
+		
+		open FILE, ">$File" or die "ERROR: Could not open $File: $!";
+		print FILE join "", @Content;
+		close FILE;
+	}
+}
+else {
+	&Shift ($File, $OutFile, $Options->{s}, \@Comments);
+}
+
+print "\n\n";
+
+
+####################################################################################################
+# Subroutines
+####################################################################################################
+
+sub ReadComments { # reads all comment lines from the spectrum file (to preserve previous SCALE entries)
+	my $File = shift;
+	
+	# read the whole file
+	open FILE, "<$File" or die "ERROR: Could not open $File: $!";
+	@Content = <FILE>;
+	close FILE;
+	
+	@Content = grep /^(\s+)?#/, @Content;
+	
+	return @Content;
+}
+
+####################################################################################################
+
+sub Shift { # shifts the x-values about the given shift
+	my $InFile   = shift;
+	my $OutFile  = shift;
+	my $Shift    = shift;
+	my $Comments = shift;
+	
+	my (@Content, $i);
+	
+	@Content = ReadSpectrum ($InFile);
+	
+	if (not @Content) {
+		print "ERROR!";
+		return undef;
+	}
+	
+	open FILE, ">$OutFile";
+	
+	if ($Comments) { print FILE join "", @{$Comments} }
+	
+	if ($Shift and not $Options->{revert}) {
+		print FILE "# SHIFT $Shift (This spectrum was shifted about $Shift)\n";
+	}
+	
+	for $i (0 .. $#Content) {
+		printf FILE "%14.6f %e\n", $Content[$i]->[0] + $Shift, $Content[$i]->[1];
+	}
+	
+	close FILE;
+	
+	print "OK ";
+	
+	return 1;
+} # of sub Shift
+
+####################################################################################################
+

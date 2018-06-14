@@ -1,0 +1,68 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    polvecangles
+#
+# Function:   Reads a matmac .vec file and prints out the angles between the polarization vectors
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 2945 $, $Date: 2008-04-28 17:13:10 +0100 (Mon, 28 Apr 2008) $
+#
+# Date:       May 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use ReadMatmac;                      # to read matmac output files
+use VectorMath;                      # for vector calculations
+use GetParameters;                   # to handle command line parameters
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {};   # create an anonymous hash
+$Parameters->{i}    = "string";
+$Parameters->{rest} = "list[1]*";
+
+my $Options = {};     # create an anonymous hash
+$Options->{i} = 4;
+
+my $Help = "\n" .
+"Usage:   polvecangles basename [-i x]\n" .
+"         basename is the base name of the .vec file\n" .
+"            i    print the angle between the i+xth residue, default is $Options->{i}\n" .
+"\n";
+
+####################################################################################################
+
+GetParameters ($Parameters, $Options, $Help);
+
+my ($Angle, $VecData, $Residue, $i, $BaseName);
+
+$BaseName = shift @{$Options->{rest}};
+$BaseName =~ s/\.(vec|kor|pol|out|pdb|stf|fmt|cd|bil)$//;
+
+$i = $Options->{i};
+
+if (not -f "$BaseName.vec") {
+	print STDERR "\nERROR: File $BaseName.vec not found!\n";
+	exit 1;
+}
+
+$VecData =[];
+
+ReadVecFile ($BaseName, $VecData);
+
+for $Residue (0 .. $#{$VecData}-$i) {
+	$Angle = Angle ($VecData->[$Residue], $VecData->[$Residue+$i]);
+	printf "%3d   %7.3f\n", $Residue, $Angle;
+}
+

@@ -1,0 +1,559 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:           psfinput
+#
+# Function:          Creates the input files (.psfinp for C++ 
+#                    
+#
+# Action:            Reads and parses the PSF
+#                    Removes alternative atom locations, calculates the dihedral angles, renumbers
+#                    all atoms and creates input file chain by chain and residue by residue.
+#                    The pdb is renumbered during the first steps, since this is required by the
+#                    input file format. The created input file is related to the renumbered file
+#                    BaseName.inp.pdb and NOT to the original file. Only the input file is required
+#                    for the calculation, not the pdb.
+#
+#
+####################################################################################################
+
+use strict;                        # always use this!!!
+use FindBin qw/$Bin/;              # sets $Bin to the directory of the script
+use lib "$Bin";                    # add the program directory to the library path
+use lib "$ENV{HOME}/bin/perllib";  # add ~/bin/perllib to the library path 
+use GetParameters;                 # to parse the command line parameters
+use Data::Dumper;                  # for easy printout of arrays and hashes
+use VectorMath;                    # for vector calculations
+use DebugPrint;                    # provides dp, useful during debugging
+use ParsePDB;                      # the PDB parser
+
+
+####################################################################################################
+# Course of script execution
+####################################################################################################
+
+# - The contents of chromophores.dat are read into $ChromList. $ChromList holds all chromophores
+#   that could be used, it's a hash and accessed by the names of the chromophores, e.g. NMA4FIT2
+#
+# - $ChromTypes is a hash linking the types to the actual names of the parameters, for example:
+#      PHE = { Name => PHECASI3, Index => 2 }
+#   If a chromophore type was used then an entry for it is created in the $ChromUsed array and
+#   the index of this entry added to $ChromTypes->{PHE}{Index}. That is, if an Index value exists
+#   the type was used.
+#
+# - $ChromUsed is filled. This is an array with the names, transitions and phi/psi angles of the
+#   used chromophores. To check whether a chromophore has not been used before and needs to be
+#   added, the $ChromTypes->{type}{Index} is checked. If undef, entries in $ChromUsed are created
+#   and the index value saved.
+
+
+####################################################################################################
+# Configuration variables
+####################################################################################################
+
+# define the separator in the log file
+my $SeparatorLine = "\n----------------------------------------------------------------------\n\n";
+
+# If true, then processing breaks, if chromophores.dat is not found, otherwise NMA4FIT2 is taken
+my $RequireDat = 0;
+
+# the maximum number of rows/columns of the Hamiltonian matrix (see matblkd)
+my $MaxDimension =  5709;
+my $MaxGroups    =  2000;
+my $MaxAtoms     = 10000;
+
+# Define the chromophores (it would be possible to get rid of @CHROMOPHORES by simply using
+# keys %{$ATOMS} but then the sequence gets lost, hence the array was kept.
+
+# The chromophores (apart from peptide, urea and CT) should be named like the residue label
+# they "belong" to. This is especially important for cyclic bonds between specific residues
+# like ASPLYS, as this string is chopped into halves to check only the respective residues
+# where the atoms are contained. The CO-containing residue needs to come first, the N-
+# residue-part of the bond.
+
+# The sequence of the atoms in the arrays ([qw/. . ./]) needs to be exactly the sequence as
+# they are in the monopole file, otherwise the assignment gets screwed up!
+
+my $CHROMOPHORES = [qw/DMB peptide urea CT PHE TYR TRP ASP GLU GLN ASN ASPLYS NAP TRT LNK A T G C U TERM/];
+my $ATOMS = {
+	DMB     => [qw/C1 C2 C3 C4 C5 C6 O7 O8/],
+        peptide => [qw/C O N/],
+	urea    => [qw/C O N/],
+	CT      => [qw/C O N C O N/],
+	PHE     => [qw/CG CD1 CE1 CZ CE2 CD2/],
+	TYR     => [qw/CZ CE1 CE2 CD1 CD2 CG OH/],
+	TRP     => [qw/CG CD2 CE2 CE3 CD1 NE1 CZ2 CZ3 CH2/],
+	ASP     => [qw/CG OD1 OD2/],
+	GLU     => [qw/CD OE1 OE2/],
+	GLN     => [qw/CD OE1 NE2/],
+	ASN     => [qw/CG OD1 ND2/],
+	TERM    => [qw/C  OT1 OT2/],
+	ASPLYS  => [qw/CG OD1 NZ/],
+	NAP     => [qw/O1 N1 O4 C3 C10 C4 C9 O2 N2 O3/],
+	TRT     => [qw/Filled further down!/],
+	LNK     => [qw/Filled further down!/],
+	A       => [qw/N1 C2 N3 C4 C5 C6 N6 N7 C8 N9/],
+	G       => [qw/N1 C2 N2 N3 C4 C5 C6 O6 N7 C8 N9/],
+	T       => [qw/N1 C2 O2 N3 C4 O4 C5 C6/],
+	C       => [qw/N1 C2 O2 N3 C4 N4 C5 C6/],
+	U       => [qw/N1 C2 O2 N3 C4 O4 C5 C6/],
+};
+
+
+####################################################################################################
+# Variables of the main program
+####################################################################################################
+
+my ($FileName, $BaseName, $File, $PDB, $LogFileInp, $LogFileStf);
+
+my $ChromList   = {};         # all information read from chromophores.dat (all AVAILABLE chromophores)
+my $ChromUsed   = {};         # the chromophores that are actually needed
+my $ChromTypes  = {};         # links types with chromophore names, e.g. PHE => PHECASI3, NMA => NMA4FIT2
+my $ChromIndex  = {};         # the indeces of the chromophores in ChromUsed
+
+my $GroupTypes  = {};         # indices of the chromophore types ("# Types of groups")
+my $Assigned    = {};         # assigned atom numbers for the chromophoric groups
+my $Coordinates = [];         # coordinates of all atoms read from the PDB
+
+
+####################################################################################################
+# Configuration of the parameters
+####################################################################################################
+
+my ($Parameters);
+
+$Parameters = {
+#	i        => "real",        # interval
+#	x        => "list[2]",     # range
+#	v        => "switch",      # verbose mode
+	dc       => "switch",      # to create the .psf.inp file (C++)
+	
+	log      => "switch",      # to output the log file (.inp.log or .stf.log)
+	
+	bbignore => "integerlist", # a list of residue numbers to be ignored for the backbone assignment
+};
+
+$Options = {
+        mm          => 1,  # this causes the -mm option to be always true, i.e. to always produce .stf
+        dat         => 0,
+        pdb         => 0,
+        log         => 0,
+        i           => 1.0,
+        w           => 12.5,
+        x           => [150, 350],
+};
+
+
+####################################################################################################
+####################################################################################################
+
+$LogFileInp = "&STDOUT"; # until a logfile has been specified, output goes to STDOUT
+$LogFileStf = "&STDOUT"; # until a logfile has been specified, output goes to STDOUT
+
+
+exit 0; # return success
+
+
+####################################################################################################
+####################################################################################################
+## SUBROUTINES
+####################################################################################################
+####################################################################################################
+
+
+sub MakeInput { # process a given file
+	my $FileName = shift;
+	my $Options  = shift;
+	my ($Key, $Chain, @Chains, $Residue, $Atom, @ResidueIndex);
+	
+	# clean up some variables, just to be on the safe side
+	$Options->{NumberOfAtoms}  = 0;
+	$Options->{NumberOfGroups} = 0;
+	
+	$GroupTypes  = {};
+	$Assigned    = {};
+	$Coordinates = [];
+	
+	# GroupTypes is used to keep track of which chromophores have already been used. If a PHE group is
+	# found, PHECASI3 is added to the ChromUsed->Names array and the index is saved to ChromTypes->{PHE}.
+	}
+	
+	$BaseName = $FileName;       # read the whole filename
+	$BaseName =~ s/\.psf//;      # and remove the extension
+	
+	
+	&ParsePDB ($FileName, $Options);  # read and parse the PDB content
+	
+	if ($PDB->Warning) {
+		my @Warnings = $PDB->GetWarnings;
+		my $Warning  = join "", @Warnings;
+		
+		$Warning = "Warnings issued by ParsePDB:\n" . $Warning;
+	#	&LogEntry ($Warning);
+	}
+	
+	@Chains = $PDB->IdentifyChains (Model => 0);
+	
+	foreach $Chain (@Chains) {
+		if ($Options->{v}) { print "Assigning chain $Chain...\n" }
+		
+		@ResidueIndex = $PDB->Get (Model => 0, Chain => $Chain, ResidueIndex => 1);
+		
+		# determine the atom numbers of the C, N and O atoms
+		&FindPeptideBonds (\@ResidueIndex, "peptide");
+		}
+		
+		
+		if ($Options->{nap}) {
+			&AssignChromophores (\@ResidueIndex, "NAP", ["NAP"]);
+		}
+		
+                if ($Options->{dmb}){
+                        &AssignChromophores (\@ResidueIndex, "DMB", ["DMB"]);
+                }
+		if ($Options->{lnk}) {
+			$ATOMS->{LNK} = [qw/C1' O1' O2'/];
+			&AssignChromophores (\@ResidueIndex, "LNK", ["LNK"]);
+			
+			$ATOMS->{LNK} = [qw/C1" O1" O2"/];
+			&AssignChromophores (\@ResidueIndex, "LNK", ["LNK"]);
+		}
+		
+	
+
+
+
+
+
+	if ($Options->{trt}) {
+			if ($Options->{trtsel}) {
+				if ($Options->{trtsel} =~ m/1/) {
+					$ATOMS->{TRT} = [qw/C5' C6' C7' C8' C9' C10'/];
+					&AssignChromophores (\@ResidueIndex, "TRT", ["TRT"]);
+				}
+					
+				if ($Options->{trtsel} =~ m/2/) {
+					$ATOMS->{TRT} = [qw/C11' C12' C13' C14' C15' C16'/];
+					&AssignChromophores (\@ResidueIndex, "TRT", ["TRT"]);
+				}
+					
+				if ($Options->{trtsel} =~ m/3/) {
+					$ATOMS->{TRT} = [qw/C17' C18' C19' C20' C21' C22'/];
+					&AssignChromophores (\@ResidueIndex, "TRT", ["TRT"]);
+				}
+					
+				if ($Options->{trtsel} =~ m/4/) {
+					$ATOMS->{TRT} = [qw/C5" C6" C7" C8" C9" C10"/];
+					&AssignChromophores (\@ResidueIndex, "TRT", ["TRT"]);
+				}
+					
+				if ($Options->{trtsel} =~ m/5/) {
+					$ATOMS->{TRT} = [qw/C11" C12" C13" C14" C15" C16"/];
+					&AssignChromophores (\@ResidueIndex, "TRT", ["TRT"]);
+				}
+					
+				if ($Options->{trtsel} =~ m/6/) {
+					$ATOMS->{TRT} = [qw/C17" C18" C19" C20" C21" C22"/];
+					&AssignChromophores (\@ResidueIndex, "TRT", ["TRT"]);
+				}
+			}
+			else {
+				$ATOMS->{TRT} = [qw/C5' C6' C7' C8' C9' C10'/];
+				&AssignChromophores (\@ResidueIndex, "TRT", ["TRT"]);
+				
+				$ATOMS->{TRT} = [qw/C11' C12' C13' C14' C15' C16'/];
+				&AssignChromophores (\@ResidueIndex, "TRT", ["TRT"]);
+				
+				$ATOMS->{TRT} = [qw/C17' C18' C19' C20' C21' C22'/];
+				&AssignChromophores (\@ResidueIndex, "TRT", ["TRT"]);
+				
+				$ATOMS->{TRT} = [qw/C5" C6" C7" C8" C9" C10"/];
+				&AssignChromophores (\@ResidueIndex, "TRT", ["TRT"]);
+				
+				$ATOMS->{TRT} = [qw/C11" C12" C13" C14" C15" C16"/];
+				&AssignChromophores (\@ResidueIndex, "TRT", ["TRT"]);
+				
+				$ATOMS->{TRT} = [qw/C17" C18" C19" C20" C21" C22"/];
+				&AssignChromophores (\@ResidueIndex, "TRT", ["TRT"]);
+			}
+		}
+		
+		if ($Options->{term}) { &AssignChromophores (\@ResidueIndex, "terminal carboxyl group", ["TERM"]) }
+		
+		if ($Options->{cyc}) {
+			&FindCyclicPeptideBonds (\@ResidueIndex, "ASPLYS");
+			&AssignPeptideChromophores (\@ResidueIndex, "ASPLYS", "NMA");
+		}
+		
+		my $Counter = 0;
+		
+		# read the coordinates from the PDB
+		foreach $Residue ( @ResidueIndex ) {
+			foreach $Atom ( @{$Residue->{Atoms}} ) {
+				if (not defined $Atom->{x} or not defined $Atom->{y} or not defined $Atom->{z}) {
+					&LogEntry ("Coordinates not defined in atom $Atom->{Race} $Atom->{AtomNumber} $Atom->{AtomType}");
+					return 0;
+				}
+				
+				++$Counter;
+				
+				if ($Options->{mm}) {
+					printf FMT "%10.3f %10.3f %10.3f\n", $Atom->{x}, $Atom->{y}, $Atom->{z};
+				}
+				
+				if ($Options->{dc}) {
+					push @{$Coordinates}, sprintf "%10.3f %10.3f %10.3f    #  %4d %-4s  %4d %-4s\n",
+				     $Atom->{x}, $Atom->{y}, $Atom->{z}, $Counter, $Atom->{AtomType}, $Atom->{ResidueNumber}, $Atom->{ResidueLabel};
+				}
+			}
+		}
+		
+		if ($Options->{v}) { print "\n" }
+	} # of foreach $Chain (@Chains)
+	
+	if ($Options->{mm}) { close FMT }
+	
+	if ($Options->{dc}) { &WriteINP ($Options) }
+	if ($Options->{mm}) { &WriteSTF ($Options) }
+	
+	if ($Options->{v}) {
+		&LogEntry ("Number of atoms:          $Options->{NumberOfAtoms}\n" .
+		           "Number of chromophores:   $Options->{NumberOfGroups}\n" .
+		           "Number of states:         $Options->{Dimension}\n");
+	}
+	
+	if ($Options->{NumberOfGroups} > $MaxGroups) {
+		&LogEntry ("WARNING: The number of groups (chromophores) is $Options->{NumberOfGroups} and exceeds the limit of $MaxGroups.\n" .
+		           "         The input files have been produced nevertheless, but calculation may fail due\n" .
+		           "         to that. It may be necessary to reduce the number of considered chromophores\n" .
+		           "         or try a single chain calculation for CD.\n");
+	}
+	
+	if ($Options->{NumberOfAtoms} > $MaxAtoms) {
+		&LogEntry ("WARNING: The number of atoms is $Options->{NumberOfAtoms} and exceeds the limit of $MaxAtoms.\n" .
+		           "         The input files have been produced nevertheless, but calculation may fail due to that.\n");
+	}
+	
+	if ($Options->{Dimension} > $MaxDimension) {
+		&LogEntry ("WARNING: The number of states (dimension of the Hamiltonian matrix) is $Options->{Dimension} and\n" .
+		           "         exceeds the limit of $MaxDimension.\n" .
+		           "         The input files have been produced nevertheless, but calculation may fail due\n" .
+		           "         to that. It may be necessary to reduce the number of considered chromophores\n" .
+		           "         or try a single chain calculation for CD.\n");
+	}
+	
+	&LogEntry ("Input files for $FileName have been created successfully.", 1);
+	if ($Options->{v}) { print "\n" }
+} # of sub MakeInput
+
+####################################################################################################
+
+sub ParsePDB { # read and parse the PDB content
+	my $FileName = shift;
+	my $Options = shift;
+	
+	$PDB = ParsePDB->new (FileName => $FileName, Verbose => 0, NoHETATM => 1, NoANISIG => 1); # create a new object
+	
+	$PDB->Parse;
+	$PDB->RemoveInsertedResidues (Model => 0, Intensive => 1);
+	$PDB->RemoveAtomLocations (Model => 0, AtomLocations => "First");
+	
+	$PDB->RenumberChains (Model => 0);                          # correct or add the ChainIDs
+	$PDB->RenumberResidues (Model => 0, KeepInsertions => 0);   # renumber the residues
+	$PDB->RenumberAtoms (Model => 0, IgnoreTER => 1);           # renumber the atoms
+	$PDB->GetAngles (Model => 0);                               # calculate the dihedral angles
+	
+	$Options->{ScaleFactor}   = $PDB->CountResidues (Model => 0);
+	$Options->{NumberOfAtoms} = $PDB->CountAtoms    (Model => 0);
+	
+	# if the number of atoms is higher than allowed the maximum, try to remove unnecessary atoms
+	if ($Options->{NumberOfAtoms} > $MaxAtoms) {
+		&LogEntry ("WARNING: $Options->{NumberOfAtoms} have been found what exceeds the maximum number of $MaxAtoms\n" .
+		          "          supported for the calculation. Unnecessary atoms will be removed.\n");
+		
+		my $Command = "";
+		
+		if ($Options->{ct})   { $Command = $Command . "-ct   " }
+		if ($Options->{nb})   { $Command = $Command . "-nb   " }
+		if ($Options->{asn})  { $Command = $Command . "-asn  " }
+		if ($Options->{asp})  { $Command = $Command . "-asp  " }
+		if ($Options->{gln})  { $Command = $Command . "-gln  " }
+		if ($Options->{glu})  { $Command = $Command . "-glu  " }
+		if ($Options->{phe})  { $Command = $Command . "-phe  " }
+		if ($Options->{tyr})  { $Command = $Command . "-tyr  " }
+		if ($Options->{trp})  { $Command = $Command . "-trp  " }
+		if ($Options->{cyc})  { $Command = $Command . "-cyc  " }
+		if ($Options->{term}) { $Command = $Command . "-term " }
+		
+		$FileName =~ s/\.pdb//;
+		
+		if ($Options->{dc}) {
+			system "deletepdbatoms $FileName.pdb $Command -o $FileName.inp.pdb";
+			$PDB = ParsePDB->new (FileName => "$FileName.inp.pdb", Verbose => 0, NoHETATM => 1, NoANISIG => 1); # create a new object
+		}
+		
+		
+		$PDB->Parse;
+		$PDB->RemoveInsertedResidues (Model => 0, Intensive => 1);
+		$PDB->RemoveAtomLocations (Model => 0, AtomLocations => "First");
+		
+		$PDB->RenumberChains (Model => 0);                          # correct or add the ChainIDs
+		$PDB->RenumberResidues (Model => 0, KeepInsertions => 0);   # renumber the residues
+		$PDB->RenumberAtoms (Model => 0, IgnoreTER => 1);           # renumber the atoms
+		$PDB->GetAngles (Model => 0);                               # calculate the dihedral angles
+		
+		$Options->{ScaleFactor}   = $PDB->CountResidues (Model => 0);
+		$Options->{NumberOfAtoms} = $PDB->CountAtoms    (Model => 0);
+		
+		# if the PDB file is not requested, delete it afterwards
+	if ($Options->{pdb}) {
+		# write the renumbered PDB without header and footer
+		if ($Options->{dc}) { $PDB->Write (FileName => "$BaseName.parse.pdb", Header => 0, Footer => 0); }
+	}
+	
+	if ($PDB->CountModels > 1) { # if more than one Model is present
+		&LogEntry ("!!! WARNING: \nMore than one model has been found in the PDB. Only the first one will be processed!\n! ! ! ! !");
+	}
+} # of sub ParsePDB
+
+####################################################################################################
+
+
+
+sub GetChromophoreAtoms { # returns the atom number of the needed types in a given group
+	my $ResidueIndex  = shift;
+	my $Key           = shift;
+	
+	my ($i, $Type, @Group, $Atom, $ResidueLabel, $Label, $SideChainGroup, @CurResidue, $Residue, $ResidueOK, $Number);
+	
+	$Label = $Key;
+	
+	if ($Label eq "TERM") {
+		# select the last group of the chain
+		$Residue = $ResidueIndex->[$#{$ResidueIndex}];
+		@Group = ();
+		$ResidueOK = 1;
+		
+		foreach $Type ( @{$ATOMS->{$Key}} ) {
+			if ( &AssignAtoms ($Residue->{Atoms}, \$Atom, $Type) ) {
+				push @Group, sprintf ("%8d", $Atom->{AtomNumber});
+			}
+			else { # if only one atom of the residue is not found
+				$ResidueOK = 0; # skip it
+				last;
+			}
+		}
+		
+		if ($ResidueOK) {
+			$SideChainGroup = join ('', @Group);
+			push @{$GroupTypes->{$Key}}, $ChromTypes->{$Key}{Index};
+			push @{$Assigned->{$Key}}, $SideChainGroup;
+		}
+	}
+	else {
+		Residue: foreach $Residue ( @{$ResidueIndex} ) {
+			$ResidueLabel = $Residue->{ResidueLabel};
+			
+			# check if the side chain of this residue is to be ignored
+			if ($Options->{scignore}) {
+				foreach $Number ( @{$Options->{scignore}} ) {
+					if ($Residue->{ResidueNumber} == $Number) { next Residue }
+				}
+			}
+			
+			# At this point the ResidueLabel has to be equal to the hash key which specifies the atoms.
+			# If for any reason label and key don't match it has to be taken care of!
+			if ($ResidueLabel eq $Label) {
+				@Group = ();
+				$ResidueOK = 1;
+				
+				foreach $Type ( @{$ATOMS->{$Key}} ) {
+					if ( &AssignAtoms ($Residue->{Atoms}, \$Atom, $Type) ) {
+						push @Group, sprintf ("%8d", $Atom->{AtomNumber});
+					}
+					else { # if only one atom of the residue is not found
+						$ResidueOK = 0; # skip it
+						last;
+					}
+				}
+				
+				if ($ResidueOK) {
+					$SideChainGroup = join ('', @Group);
+					push @{$GroupTypes->{$Key}}, $ChromTypes->{$Key}{Index};
+					push @{$Assigned->{$Key}}, $SideChainGroup;
+				}
+			}
+		}
+	}
+	
+	return 1;
+} # of sub GetChromophoreAtoms
+
+####################################################################################################
+
+sub AssignAtoms { # searches for atom types in the PDB and returns an array with their numbers
+	my $Atoms = shift;
+	my $Var = shift;
+	my $Pattern = shift;
+	my $Counter = 0;
+	my ($Atom, $AtomNumber, $ResidueNumber);
+	
+	foreach $Atom ( @{$Atoms} ) {
+		if ($Pattern eq $Atom->{AtomType}) {
+			$AtomNumber = $Atom->{AtomNumber};
+			$ResidueNumber = $Atom->{ResidueNumber};
+			
+			if ($Counter == 0) {
+				${$Var} = $Atom;
+				++$Counter;
+			}
+			}
+		}
+	
+	
+} # of sub AssignAtoms
+
+####################################################################################################
+
+sub WriteINP { # writes the inp file
+	my $Options = shift;
+	my ($i, $String, $Type, $Group, $Sum, $Key, $CurSum, $Label, $Dimension, $Indent);
+	
+	$Indent = "   ";
+	$Sum    = 0;
+		
+	$Options->{NumberOfGroups} = $Sum;
+	
+	if ($Options->{NumberOfGroups} == 0) {
+		# This is an error that regularly happens with user-created PDB files. The error message is
+		# therefore more extensive since DichroCalc has to deal with user-created files.
+		my $Message = "ERROR: No groups have been found in $BaseName.pdb!\n\n" .
+		              "Check whether the atom labels in the PDB are correct (e.g. C, N, O for a peptide group)\n" .
+		              "and that the residue labels are valid (e.g. A, C, G, T, U for nucleic bases). Also,\n" .
+		              "each atom label may only occur once per group, if there are ambiguities within a\n" .
+		              "residue it is ignored.\n\n";
+		
+		&AbortProgram ($Message, 11);
+	}
+	
+	open (INP, ">$BaseName.inp") or &AbortProgram ("ERROR: Unable to create $BaseName.inp, $!", 12);
+	
+	
+	
+	print INP "\$COORDINATES\n";
+	print INP "  #$Indent     x          y          z      #  atom label  res label\n";
+	
+	foreach $Group ( @{$Coordinates} ) {
+		printf INP "$Indent %s", $Group;
+	}
+	print INP "\$END\n\n";
+	
+	
+	close INP;
+} # of sub WriteINP
+
+####################################################################################################
+
+
+

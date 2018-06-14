@@ -1,0 +1,34 @@
+  -ADE-FUL3-
+# only two transitions, one close to 290 nm and the the one with lowest energy around 260nm
+# constant moment length of 1 Angstroms
+10
+        -2.334          0.529          0.000          1.00    # N1
+        -2.146         -0.827          0.000          1.00    # C2
+        -1.066         -1.501          0.000          1.00    # N3
+        -0.000         -0.684          0.000          1.00    # C4
+         0.000          0.684          0.000          1.00    # C5
+        -1.242          1.308          0.000          1.00    # C6
+        -1.390          2.631          0.000          1.00    # N6
+         1.278          1.174          0.000          1.00    # N7
+         2.053          0.073          0.000          1.00    # C8
+         1.342         -1.056          0.000          1.00    # N9
+&TRANSITION 1->... # ADE-FUL3
+   2   41376.3066       # 241.68 nm            # Transition moment 1.90, angle 23.00 to y axis
+      -0.3907      0.9205      0.0000   1.000  # Electr. mom., scale fac.
+       0.0000      0.0000      0.0000          # Magnet. mom.
+       0.00000000      0.00000000      0.00000000     -1.89677188
+      -0.39073113      0.92050485      0.00000000      1.89677188
+   2   50329.0747       # 198.69 nm            # Transition moment 6.00, angle -57.00 to y axis
+       0.8387      0.5446      0.0000   1.000  # Electr. mom., scale fac.
+       0.0000      0.0000      0.0000          # Magnet. mom.
+       0.00000000      0.00000000      0.00000000     -5.99649188
+       0.83867057      0.54463904      0.00000000      5.99649188
+&TRANSITION 2->... # ADE-FUL3
+   0     00000.0000     #
+         0.0000         0.0000         0.0000  1.000  # electr. mom., scale fac..
+         0.0000         0.0000         0.0000         # magnet. mom.
+&PERMANENT MOMENTS # ADE-FUL3
+   0     00000.0000     #
+         0.0000         0.0000         0.0000  1.000  # electr. mom., scale fac..
+   0     00000.0000     #
+         0.0000         0.0000         0.0000  1.000  # electr. mom., scale fac..

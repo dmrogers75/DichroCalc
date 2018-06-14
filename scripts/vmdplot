@@ -1,0 +1,133 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:       vmdplot
+#
+# Function:      Renders a PDB file using VMD
+#
+# Author:        Benjamin Bulheller
+#
+# Version:       $Revision$, $Date$
+#
+# Requirements:  vmd
+#                gs
+#                convert (ImageMagik)
+#
+# Date:          January 2009
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use GetParameters;                   # to handle command line parameters
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my ($VMD, $TACHYON);
+
+if ($^O =~ m/MacOS|rhapsody|darwin/) { # if the script is run on a Mac
+	$VMD="$ENV{HOME}/bin/VMD/Contents/vmd/vmd_MACOSXX86";
+	$TACHYON="$ENV{HOME}/bin/VMD/Contents/vmd/tachyon_MACOSXX86";
+}
+else { # suppose it's Linux
+	$VMD="/usr/local/lib/vmd/vmd_LINUX";
+	$TACHYON="/usr/local/lib/vmd/tachyon_LINUX";
+}
+	
+foreach ( $VMD, $TACHYON ) {
+	if (not -f $_) {
+		print STDERR "\nERROR: Could not find $_\n\n";
+		exit 10
+	}
+}
+
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {     # create an anonymous hash
+	rest  => "filelist*",
+	rot   => "string",
+	scale => "real",
+	angle => "real",
+};
+
+my $Options = {       # create an anonymous hash
+	rot   => "x",
+	angle => "-90",
+	scale => "1.0",
+};
+
+my $Help = "\n" .
+"Usage:   vmdplot file.pdb -rot [x|y|z] -angle angle -scale \n" .
+"\n" .
+"   -rot    the axis about which the PDB is rotated, default is $Options->{rot}\n" .
+"   -angle  the angle about which the PDB is rotated, default is $Options->{angle}\n" .
+"   -scale  to scale the PDB, default is $Options->{scale}\n" .
+"\n";
+
+####################################################################################################
+
+my ($File, $Command);
+
+GetParameters ($Parameters, $Options, $Help);
+
+if ($Options->{rot} !~ m/^[xyz]$/) {
+	print STDERR "\nERROR: The axis must be either x, y, or z.\n\n";
+	exit 10;
+}
+
+foreach $File ( @{$Options->{rest}} ) {
+$File =~ s/\.pdb$//;
+
+$Command = <<EOF;
+axes location lowerleft
+display projection orthographic
+color Display Background white
+color Axes Labels black
+mol modstyle 0 0 NewCartoon
+mol modcolor 0 0 Structure
+scale by $Options->{scale}
+rotate $Options->{rot} by $Options->{angle} 
+render list
+# render TachyonInternal $File.tga
+render PostScript $File.ps
+render Tachyon $File
+EOF
+
+&RenderFile ($File, $Command);
+
+}
+
+
+
+####################################################################################################
+# Subroutines
+####################################################################################################
+
+sub RenderFile { # renders a PDB file using VMD
+	my $File    = shift;
+	my $Command = shift;
+	
+	# This routine was adapted from http://www.theory.chem.uwo.ca/drupal5/?q=node/22
+	# VMD manual http://www.ks.uiuc.edu/Research/vmd/current/ug/node1.html
+	
+	system "printf \"$Command\" | $VMD -f $File.pdb -size 1024 1024 -dispdev text -eofexit";
+	# system "$TACHYON -auto_skylight 0.8 $File -o $File.tga";
+	# system "$TACHYON -rescale_lights 0.4 -add_skylight 0.7 $File -o $File.tga -aasamples 8"
+	# system "convert $File.tga -transparent black $File.png";
+	
+	system "gs -r300 -dEPSCrop -dTextAlphaBits=4 -sDEVICE=png16m -sOutputFile=$File.png -dBATCH -dNOPAUSE $File.ps";
+	system "convert -quality 80 -trim $File.png $File.jpg";
+	system "convert $File.jpg eps2:$File.eps";
+	
+} # of sub RenderFile
+

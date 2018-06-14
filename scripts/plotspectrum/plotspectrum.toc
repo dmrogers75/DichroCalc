@@ -1,0 +1,13 @@
+\contentsline {section}{Introduction}{3}
+\contentsline {section}{Installation}{4}
+\contentsline {section}{The Quick'n'Dirty-Section for the Impatient}{5}
+\contentsline {section}{Input, Output, Command and Configuration Files}{7}
+\contentsline {section}{Title and Axes Labels}{8}
+\contentsline {section}{Legend or Key}{9}
+\contentsline {section}{Line Styles and Graph Types}{10}
+\contentsline {section}{3D Plots}{13}
+\contentsline {section}{Contour Plots}{13}
+\contentsline {section}{$x$ and $y$ Ranges}{13}
+\contentsline {section}{Curve Smoothing}{14}
+\contentsline {section}{Changing Postscript Dash Lengths}{15}
+\contentsline {section}{Plotting Specific Columns}{15}

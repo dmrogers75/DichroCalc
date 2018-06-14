@@ -1,0 +1,391 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:     plotintensities
+#
+# Function:    Plots the intensities of a set of experimental spectra against the ones from 
+#              calculated ones
+#
+# Author:      Benjamin Bulheller
+#
+# Version:     $Revision: 3910 $, $Date$
+#
+# Date:        January 2007
+#
+####################################################################################################
+
+use strict;                         # always use this!!!
+use lib "$ENV{HOME}/bin/perllib";   # add ~/bin/perllib to the library path
+use GetParameters;                  # to parse the command line parameters
+use Data::Dumper;                   # for easy printout of arrays and hashes
+use GetBaseName;                    # to split a filename into base name and extension
+use ReadSpectrum;                   # to read in spectra
+use DebugPrint;                     # handy during debugging
+use Statistics::LineFit;            # for linear regression
+
+####################################################################################################
+# Configuration Variables
+####################################################################################################
+
+my $Parameters = {
+	e         => "list",
+	c         => "list",
+	o         => "string",
+	d         => "string",
+	w         => "string",
+	t         => "string",
+	r         => "string",
+	pt        => "string",
+	ps        => "string",
+	
+	all       => "switch",
+	nogrid    => "switch",
+	nofit     => "switch",
+	nolabels  => "switch",
+	tics      => "string",
+	mtics     => "string",
+};
+
+my $Options = {
+	d       => 10,
+	pt      => 1,
+	ps      => 1,
+	xlabel  => "Experimental / deg cm^2 dmol^{-1}",
+	ylabel  => "Calculation / deg cm^2 dmol^{-1}",
+};
+
+my $Help = "\n" .
+	"Usage:   plotintensities -w wavelength -e expfiles -c calcfiles\n" .
+	"\n" .
+	"   or:   plotintensities -w wavelength file1 [file2] [...]\n" .
+	"         This will read all given files and search for files with the same\n" .
+	"         base name and .exp.cd extension.\n" .
+	"\n" .
+	"The intensities at the given wavelength from the calculated files are then\n" .
+	"plotted against the calculated ones.\n" .
+	"\n" .
+	"Optional: \n" .
+	"\n" .
+	"  -all       to label all data points\n" .
+	"  -d         the deviation in percent from perfect correlation, which causes\n" .
+	"             the point to be labeled. The default is 10%, use '-d 0' or '-all'\n" .
+	"             to label all points\n" . 
+	"  -mtics     to define the minor axis tics\n" .
+	"  -nofit     to suppress the linear regression\n" .
+	"  -nogrid    to switch off the grid lines\n" .
+	"  -nolabels  to switch off the labels of the points\n" .
+	"  -o         to specify an output file\n" .
+	"  -ps        the point size, default is -ps $Options->{ps}\n" .
+	"  -pt        the point type, default is -pt $Options->{pt}\n" .
+	"  -r         to define a range like -r min:max\n" .
+	"  -t         to specify the title of the plot\n" .
+	"  -tics      to define the major axis tics\n" .
+	"\n" .
+	"\n";
+
+####################################################################################################
+
+my ($File, $BaseName, @CalFiles, @ExpFiles);
+
+# parse the given parameters
+GetParameters ($Parameters, $Options, $Help);
+
+# check if -c or -e is given solely
+if (   ((defined $Options->{e}) and (not defined $Options->{c}))     # -e given without -c
+	 or ((not defined $Options->{e}) and (defined $Options->{c})) ) { # -c given without -e
+	print STDERR "\nERROR: both -c and -e have to be defined if giving one of them\n\n";
+	print $Help;
+	exit 1;
+}
+
+# if both -c and -e are given
+if (defined $Options->{c} and defined $Options->{e}) {
+	# then check if any excessive parameters have been given
+	if (defined $Options->{rest}) {
+		print STDERR "\nERROR: The following parameters could not be interpreted:\n\n";
+		print STDERR join ("\n", @{$Options->{rest}});
+		print STDERR "\n\n";
+		exit 2;
+	}
+	
+	@CalFiles = @{$Options->{c}};
+	@ExpFiles = @{$Options->{e}};
+}
+
+
+# if $Options{rest} is defined, it means that something like *.cd was specified and that
+# it has to be determined what is experimental and what is calculated 
+if (defined $Options->{rest}) {
+	foreach $File ( @{$Options->{rest}} ) {
+		if (not -f $File) {
+			print STDERR "\nERROR: File $File could not be found!\n\n";
+			exit 3;
+		}
+
+		if ($File =~ m/\.exp\.cd$/) { push @ExpFiles, $File } # if extension is .exp.cd
+		                       else { push @CalFiles, $File } # else regard it as calculated
+	}
+
+	# if calculated but no experimental spectra were found, it is assumed that something like 
+	# *.nma.cd was given and for each file 1beb.nma.cd a respective 1beb.exp.cd exists
+	if ( (scalar @CalFiles > 0) and (scalar @ExpFiles == 0) ) {
+		foreach $File (@CalFiles) {
+			$BaseName = GetBaseName ($File);      # removes .cd
+			$BaseName = GetBaseName ($BaseName);  # remove .nma, .wdy and the like
+
+			if (-f "$BaseName.exp.cd") {
+				push @ExpFiles, "$BaseName.exp.cd";
+			}
+			else {
+				print STDERR "\nERROR: For file $File no experimental could be found!\n\n";
+				exit 4;
+			}
+		}
+	}
+
+	$Options->{c} = \@CalFiles;
+	$Options->{e} = \@ExpFiles;
+} # of if (defined $Options{rest})
+
+# check if number of calculated spectra matches the one of experimental spectra
+if (scalar @CalFiles != scalar @ExpFiles) {
+	print STDERR "\nERROR: Number of calculated files (", scalar @CalFiles, ") does not match\n";
+	print STDERR "     number of files experimental files (", scalar @ExpFiles, ")!\n\n";
+	exit 5;
+}
+
+if ($Options->{r}) { # if a range was given
+	if ($Options->{r} !~ m/\d+:\d+/) {
+		print STDERR "\nERROR: Range must be given like -r min:max.\n\n";
+		exit 6;
+	}
+
+	$Options->{xrange} = $Options->{r};
+	$Options->{yrange} = $Options->{r};
+}
+
+if (not defined $Options->{w}) { # if no wavelength was given
+	print STDERR "\nERROR: No wavelength defined!\n\n";
+	exit 7;
+}
+
+if ($Options->{o}) { # if an outfile was specified
+	$Options->{CommandFile} = GetBaseName ($Options->{o});
+	$Options->{CommandFile} = $Options->{CommandFile} . ".cmd";
+}
+else { # if no outfile was specified
+	$Options->{o} = "intensities.$Options->{w}.ps";
+	$Options->{CommandFile} = "intensities.$Options->{w}.cmd";
+}
+
+&GetData ($Options);
+&LinearRegression ($Options);
+&CreateCommandFile ($Options);
+
+system "gnuplot $Options->{CommandFile}";
+
+
+####################################################################################################
+# SUBROUTINES
+####################################################################################################
+
+sub GetData { # collects the intensities at the specified wavelength
+	my $Options = shift;
+
+	my ($Point, $Min, $Max, @Data);
+	my ($CalFile, @CalFiles, @CalData, $CalValue, $ExpFile, @ExpFiles, @ExpData, $ExpValue);
+
+	@CalFiles = @{$Options->{c}};
+	@ExpFiles = @{$Options->{e}};
+
+	while (@CalFiles) {
+		$CalFile = shift @CalFiles;
+		$ExpFile = shift @ExpFiles;
+
+		@CalData = ReadSpectrum ($CalFile);
+		@ExpData = ReadSpectrum ($ExpFile);
+
+		# look for a wavelength which is equal to the searched one or take the very next bigger one
+		until (not @CalData or $CalData[0]->[0] >= $Options->{w}) { shift @CalData }
+		until (not @ExpData or $ExpData[0]->[0] >= $Options->{w}) { shift @ExpData }
+
+		if (not defined $CalData[0]->[0]) {
+			print STDERR "\nERROR: In file $CalFile the wavelength $Options->{w} could not be found\n\n";
+			exit 8;
+		}
+		else {
+			$CalValue = $CalData[0]->[1];
+		}
+
+		if (not defined $ExpData[0]->[0]) {
+			print STDERR "\nERROR: In file $ExpFile the wavelength $Options->{w} could not be found\n\n";
+			exit 9;
+		}
+		else {
+			$ExpValue = $ExpData[0]->[1];
+		}
+
+		# cut away extensions until the filenames match or no extension is left
+		until ( ($CalFile eq $ExpFile) or ($CalFile !~ m/\./ and $ExpFile !~ m/\./) ) {
+			$CalFile = GetBaseName ($CalFile);
+			$ExpFile = GetBaseName ($ExpFile);
+		}
+
+		if ($CalFile ne $ExpFile) {
+			print STDERR "\nERROR: Could not determine the BaseName of $CalFile and $ExpFile\n\n";
+			exit 10;
+		}
+		
+
+		push @Data, [$CalFile, $ExpValue, $CalValue];
+	}
+
+	$Options->{Data} = \@Data;
+	
+	if (not $Options->{r}) { # if no range was given
+		$Min = +1E20;
+		$Max = -1E20;
+
+		foreach $Point (@Data) {
+			if ($Point->[1] < $Min) { $Min = $Point->[1] }
+			if ($Point->[1] > $Max) { $Max = $Point->[1] }
+			if ($Point->[2] < $Min) { $Min = $Point->[2] }
+			if ($Point->[2] > $Max) { $Max = $Point->[2] }
+		}
+
+		# add/subtract 10 percent to give room for the labels
+		$Min = $Min - abs ($Max - $Min) * 0.1;
+		$Max = $Max + abs ($Max - $Min) * 0.1;
+
+		# discard the floating point part
+		$Min = int $Min;
+		$Max = int $Max;
+
+		$Options->{Min} = $Min;
+		$Options->{Max} = $Max;
+
+		$Options->{xrange} = "$Min:$Max";
+		$Options->{yrange} = "$Min:$Max";
+	}
+	else {
+		my $Pos = index $Options->{r}, ":";
+		$Options->{Min} = substr ($Options->{r}, 0, $Pos);
+		$Options->{Max} = substr ($Options->{r}, $Pos+1);
+	}
+
+} # of sub GetData
+
+
+sub LinearRegression { 
+	my $Options = shift;
+
+	my ($Point, @xValues, @yValues, $LineFit);
+
+	if ($Options->{nofit}) { return }
+
+	foreach $Point ( @{$Options->{Data}} ) {
+		push @xValues, $Point->[1];
+		push @yValues, $Point->[2];
+	}
+
+	if (not @xValues or not @yValues) {
+		print STDERR "\nERROR: No coordinates have been found for the linear regression!\n\n";
+		exit 11;
+	}
+
+	$LineFit = Statistics::LineFit->new();
+	$LineFit->setData (\@xValues, \@yValues);
+	($Options->{Intercept}, $Options->{Slope}) = $LineFit->coefficients();
+} # of sub LinearRegression
+
+
+sub CreateCommandFile { # creates the command file for gnuplot
+	my $Options = shift;
+
+	my $Point;
+	my ($File, $CurBaseName, $First, $Deviation);
+	
+	open PLOT, ">$Options->{CommandFile}" or die "ERROR: Could not create file $Options->{CommandFile}: $!";
+	
+	print PLOT "set encoding iso_8859_1\n";
+	print PLOT "set terminal postscript enhanced colour\n";
+	
+	print PLOT "set size square\n";
+	print PLOT "set xzeroaxis\n";
+	print PLOT "set ticscale 1.0 0.6\n\n";
+
+	if (not $Options->{nogrid}) {
+		print PLOT "set grid\n";
+	}
+	
+	if ($Options->{tics}) {
+		print PLOT "set xtics border nomirror norotate $Options->{tics}\n";
+		print PLOT "set ytics border nomirror norotate $Options->{tics}\n\n";
+	}
+	
+	if ($Options->{mtics}) {
+		print PLOT "set mxtics $Options->{mtics}\n";
+		print PLOT "set mytics $Options->{mtics}\n\n";
+		print PLOT "\n";
+	}
+
+	print PLOT "set xrange [$Options->{xrange}]\n";
+	print PLOT "set yrange [$Options->{yrange}]\n";
+	print PLOT "\n";
+	
+	if ( defined $Options->{t} ) {
+		print PLOT "set title \"$Options->{t}\"\n";
+	}
+	
+	print PLOT "show label\n";
+	print PLOT "set output \"$Options->{o}\"\n\n";
+	print PLOT "set xlabel \"$Options->{xlabel}\"\n";
+	print PLOT "set ylabel \"$Options->{ylabel}\"\n";
+	print PLOT "\n";
+
+	print PLOT "set style line 1 lt 1\n";
+	print PLOT "set style line 2 lt 3\n";
+	print PLOT "\n";
+	
+	print PLOT "unset key\n";
+	
+	$First = 1;
+	
+	# if the points shall be labeled
+	if (not $Options->{nolabels}) {
+		foreach $Point ( @{$Options->{Data}} ) {
+
+			if ($Options->{d}) { # if a deviation is given
+				$Deviation = abs ($Point->[1] - $Point->[2]) / abs ($Options->{Max} - $Options->{Min});
+				$Deviation = $Deviation * 100;  # "convert" to percent
+
+				if ($Deviation > $Options->{d}) {
+					print PLOT "set label \"$Point->[0]\" at $Point->[1], $Point->[2]\n";
+				}
+			}
+			else { # if no deviation is given, label all points
+				print PLOT "set label \"$Point->[0]\" at $Point->[1], $Point->[2]\n";
+			}
+		}
+
+		print PLOT "\n";
+	}
+	
+	print PLOT "set multiplot\n";
+	print PLOT "plot x with lines ls 1\n"; # plot the middle diagonal for perfect correlation
+
+	# plot the linear regression, if it was not asked to omit it
+	if (not $Options->{nofit}) {
+		print PLOT "plot ", $Options->{Intercept}, " + ", $Options->{Slope}, " * x with lines ls 2\n";
+	}
+
+	print PLOT "plot \"-\" with points pt $Options->{pt} ps $Options->{ps}\n";
+
+	foreach $Point ( @{$Options->{Data}} ) {
+		print PLOT "$Point->[1], $Point->[2]\n";
+	}
+
+	print PLOT "E\n\n";
+} # of sub CreateCommandFile
+

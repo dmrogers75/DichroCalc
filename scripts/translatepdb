@@ -1,0 +1,513 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    translatepdb
+#
+# Function:   Applies several translations and rotations to a pdb file
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3892 $, $Date: 2009-02-11 18:30:56 +0000 (Wed, 11 Feb 2009) $
+#
+# Date:       July 2006
+#
+####################################################################################################
+
+use strict;                        # always use this!
+use FindBin qw/$Bin/;              # sets $Bin to the directory of the script
+use lib $Bin;                      # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib";  # add ~/bin/perllib to the library path
+use Data::Dumper;                  # to easily print arrays and hashes
+use GetBaseName;                   # to split up the filename
+use DebugPrint;                    # handy during debugging
+
+$Data::Dumper::Sortkeys = 1;       # to sort the hash keys of the Dumper output
+
+
+####################################################################################################
+# Configuration Variables
+####################################################################################################
+
+my $NumberFormat = "%8.3f";
+
+####################################################################################################
+
+my ($InFile, $BaseName, $OutFile, @Atoms, @Fields);
+my ($Line, $Coord, $Temp1, $Temp2, $Type, $Axis, $AxisVector, $Norm, $i);
+my ($Centre, $CentreDiff, $Translation, @Translations);
+
+my $Content = [];          # create an array reference
+my $PDB = [];              # create an array reference
+
+my $Pi = atan2 (1,1) * 4;  # camel book, page 684
+my $Rad = $Pi/180;         # convert degrees to radians
+my $Deg = 180/$Pi;         # convert radians to degrees
+
+if (scalar @ARGV < 2) {
+	&Usage;
+	exit 1;
+}
+
+$InFile  = shift;
+
+if (not -f $InFile) {          # if the given input file is not found
+	if (-f "$InFile.pdb") {     # try extension .pdb
+		$InFile = "$InFile.pdb";
+	}
+	else {
+		print STDERR "\nERROR: File $InFile not found!\n\n";
+		exit 2;
+	}
+}
+
+$BaseName = GetBaseName ($InFile);
+
+# interpret the command line parameters
+while (@ARGV) {
+	$Temp1 = shift;
+	$Centre = 0;
+
+	# if the parameter begins with r or t and is not the last parameter
+	if ($Temp1 =~ m/^[rt][xyza]/i) {
+		$Type  = substr ($Temp1, 0, 1); # the first letter defining translation or rotation
+		$Type  = lc $Type;              # the case of the type is disregarded, all changed lowercase
+
+		$Axis  = substr ($Temp1, 1, 1); # the second letter defining the axis
+		
+		# check whether the compound is to be rotated about its internal axis
+		# in that case it is moved to the orgin, rotated and moved back afterwards
+		if ($Axis =~ m/XYZ/) { $Centre = 1 }
+		$Axis = lc $Axis;
+			
+		if    ($Axis eq "x") { $AxisVector = { x => 1, y => 0, z => 0 } }
+		elsif ($Axis eq "y") { $AxisVector = { x => 0, y => 1, z => 0 } }
+		elsif ($Axis eq "z") { $AxisVector = { x => 0, y => 0, z => 1 } }
+		elsif ($Axis eq "a") {
+			# get the vector of the arbitrary axis
+			$Temp2 = shift;
+			@Fields = split /,/, $Temp2;
+			
+			if (scalar @Fields != 3) {
+				print STDERR "\nERROR: An arbitrary axis the axis must be defined like so:\n";
+				print STDERR "       translatepdb infile.pdb ra 0,1,1 45 outfile.pdb\n\n";
+				exit 5;
+			}
+			
+			$AxisVector = { x => $Fields[0], y => $Fields[1], z => $Fields[2] };
+			$Norm = &Norm ($AxisVector);
+			
+			if (not $Norm) {
+				print STDERR "\nERROR: The norm of the arbitrary axis could not be calculated!\n";
+				print STDERR "       An arbitrary axis the axis must be defined like so:\n";
+				print STDERR "       translatepdb infile.pdb ra 0,1,1 45 outfile.pdb\n\n";
+				exit 6;
+			}
+			
+			# normalize the coordinates of the vector to 1 or 0
+			for $Coord ("x", "y", "z") {
+				$AxisVector->{$Coord} = $AxisVector->{$Coord} / &Norm ($AxisVector);
+			}
+		}
+		
+		# get the value about which it is rotated or translated
+		$Temp2 = shift;
+		
+		if ($Temp2 !~ m/[+-\.\d]/g) {
+			print STDERR "\nERROR: $Temp2 must be a number!\n\n";
+			exit 10;
+		}
+		
+		if ($Type eq "r") {
+			$Temp2 = $Temp2 * $Rad;  # convert to radians
+		}
+		
+		push @Translations, { Axis => $AxisVector, Value => $Temp2, Type => $Type, Centre => $Centre };
+	}
+	elsif ($Temp1 eq "origin") {
+		push @Translations, { Type => "origin" };
+	}
+	elsif ($Temp1 =~ m/^[xyz]0/) {
+		push @Translations, { Type => "$Temp1" };
+	}
+	else {
+		if (@ARGV) { # if this was not the last parameter
+			print STDERR "\nERROR: $Temp1 was not recognized!\n\n";
+			exit 11;
+		}
+		else { # if this was the last paramater
+			$OutFile = $Temp1;
+		}
+	}
+} # of while (@ARGV)
+
+open FILE, "<$InFile";
+@{$Content} = <FILE>;     # read the PDB file
+close FILE;
+
+# parse the @{$Content}
+foreach $Line ( @{$Content} ) {
+	if ($Line !~ m/^(ATOM|HETATM|SIGATM|SIGUIJ|ANISOU)/) {
+		push @{$PDB}, { Line => $Line };
+		next;
+	}
+	else {
+		my $Coord = {}; # must be initialized for each Coordinate!
+		
+		$Coord->{x} = substr ($Line, 30, 7);
+		$Coord->{x} =~ s/\s//g;
+		
+		$Coord->{y} = substr ($Line, 38, 7);
+		$Coord->{y} =~ s/\s//g;
+		
+		$Coord->{z} = substr ($Line, 46, 7);
+		$Coord->{z} =~ s/\s//g;
+		
+		push @{$PDB}, { Line => $Line, Coord => $Coord };
+	}
+}
+
+# assign a default filename, if $OutFile was not given
+if (not defined $OutFile) { $OutFile = "$BaseName.trans.pdb" }
+
+# perform the translation one by one
+foreach $Translation (@Translations) {
+	if ($Translation->{Type} eq "origin") {
+		&MoveToOrigin ($PDB);
+		next;
+	}
+	
+	if ($Translation->{Type} =~ m/[xyz]0/) {
+		&SetValueZero ($PDB, $Translation->{Type});
+		next;
+	}
+
+	if ($Translation->{Centre}) {
+		$CentreDiff = &CentrePDB ($PDB);
+	}
+	
+	foreach $Line ( @{$PDB} ) {
+		if (not defined $Line->{Coord}) {
+			next; # if it is not an atom entry, skip it
+		}
+		else {	
+			$Coord = $Line->{Coord};
+				
+			if ($Translation->{Type} eq "r") { # if it is a rotation
+				&Rotation ($Coord, $Translation->{Value}, $Translation->{Axis}, $Translation->{Centre});
+			}
+			else { # if it is a translation
+				&Translation ($Coord, $Translation->{Value}, $Translation->{Axis});
+			}
+			
+			&FormatNumber ($Coord);
+			
+			substr ($Line->{Line}, 30, 8) = $Coord->{x};
+			substr ($Line->{Line}, 38, 8) = $Coord->{y};
+			substr ($Line->{Line}, 46, 8) = $Coord->{z};
+		}
+	}
+
+	if ($Translation->{Centre}) {
+		&RevertCentreing ($PDB, $CentreDiff);
+	}
+} # foreach $Translation (@Translations)
+
+# write the translated PDB
+open FILE, ">$OutFile" or die "ERROR: Could not write to file $OutFile: $!";
+foreach $Line ( @{$PDB} ) { print FILE $Line->{Line} }
+close FILE;
+
+
+
+####################################################################################################
+# Subroutines
+####################################################################################################
+
+sub Usage { # prints the usage information
+	print STDERR "\n";
+	print STDERR "Usage:   translatepdb InFile rAxis angle tAxis distance [...] [OutFile]\n";
+	print STDERR "\n";
+	print STDERR "e.g.:    translatepdb file.pdb rx 45 tz 2 ry 90 outfile.pdb\n";
+	print STDERR "         translatepdb file.pdb ra 1,1,0 30 ta 1,1,0 25 outfile.pdb\n";
+	print STDERR "\n";
+	print STDERR "InFile    pdb-file, the extension can be omitted\n";
+	print STDERR "OutFile   where the result is written to, \'.trans.pdb\' is used if omitted.\n";
+	print STDERR "\n";
+	print STDERR "r         do a rotation of 'angle' degrees about 'Axis'\n";
+	print STDERR "t         do a translation of 'distance' units with respect to 'Axis'\n";
+	print STDERR "\n";
+	print STDERR "Axis:     x, y or z for one of the Cartesian axes\n";
+	print STDERR "          X, Y, or Z for one of the axes through the centre of the structure\n";
+	print STDERR "          a for an arbitrary axis, the axis must be defined after that like\n";
+	print STDERR "          ra 0,1,1 45 for a rotation of 45 degrees about the vector 0,1,1\n";
+	print STDERR "\n";
+	print STDERR "          If a rotation about X, Y or Z is requested (capital letter!), the\n";
+	print STDERR "          centre of the structure is moved to the origin, the rotation about\n";
+	print STDERR "          the axis performed and then moved back again. So it is actually a\n";
+	print STDERR "          rotation about the parallel Cartesian axis through the centre of\n";
+	print STDERR "          the structure.\n";
+	print STDERR "\n";
+	print STDERR "origin    Keyword that can be given after any rotation or translation.\n";
+	print STDERR "          It causes the atom with the lowest z value to be moved to the origin.\n";
+	print STDERR "\n";
+	print STDERR "x0 y0 z0  the molecule is moved to the given axis\n";
+	print STDERR "\n";
+} # of sub Usage
+
+
+sub MoveToOrigin { # moves the PDB (i.e. the atom with the smallest coordinates) to the origin
+	my $PDB = shift;
+	my ($Coord, $Line, $i);
+	
+	my $Min = {};
+	
+	$Min->{z} = 1E20;
+	
+	# find the atom with the lowest z value
+	foreach $Line ( @{$PDB} ) {
+		if (not defined $Line->{Coord}) {
+			next; # if it is not an atom entry, skip it
+		}
+		else {
+			$Coord = $Line->{Coord};
+			
+			if ($Coord->{z} < $Min->{z}) {
+				$Min->{x} = $Coord->{x};
+				$Min->{y} = $Coord->{y};
+				$Min->{z} = $Coord->{z};
+			}
+		}
+	}
+	
+	# "invert" the coordinates
+	for $i ("x", "y", "z") { $Min->{$i} = $Min->{$i} * -1 }
+	
+	# now move all atoms about the coordinates of the found atom
+	foreach $Line ( @{$PDB} ) {
+		if (not defined $Line->{Coord}) {
+			next; # if it is not an atom entry, skip it
+		}
+		else {
+			$Coord = $Line->{Coord};
+			
+			$Coord->{x} = $Coord->{x} + $Min->{x};
+			$Coord->{y} = $Coord->{y} + $Min->{y};
+			$Coord->{z} = $Coord->{z} + $Min->{z};
+			
+			&FormatNumber ($Coord);
+			
+			substr ($Line->{Line}, 30, 8) = $Coord->{x};
+			substr ($Line->{Line}, 38, 8) = $Coord->{y};
+			substr ($Line->{Line}, 46, 8) = $Coord->{z};
+		}
+	}
+} # of sub MoveToOrigin
+
+
+sub CentrePDB { # move the centre of the PDB to the origin
+	my $PDB = shift;
+
+	my (@Content, $Line, $x, $y, $z, $File, $Extrema, $Range, $CentreDiff, $i);
+
+	# initialize the values to avoid an error in the first comparison
+	foreach ( qw/x y z/ ) {
+		$Extrema->{Min}{$_} =  1E20;
+		$Extrema->{Max}{$_} = -1E20;
+	}
+
+	# determine the extreme values for each axis
+	for $i (0 .. $#{$PDB}) {
+		$Line = $PDB->[$i];
+		
+		if ($Line !~ m/^(ATOM|HETATOM)/) { next }
+		
+		$x = substr ($Line, 30, 8); $x =~ s/\s//g;
+		$y = substr ($Line, 38, 8); $y =~ s/\s//g;
+		$z = substr ($Line, 46, 8); $z =~ s/\s//g;
+		
+		if ($x < $Extrema->{Min}{x}) { $Extrema->{Min}{x} = $x }
+		if ($x > $Extrema->{Max}{x}) { $Extrema->{Max}{x} = $x }
+		
+		if ($y < $Extrema->{Min}{y}) { $Extrema->{Min}{y} = $y }
+		if ($y > $Extrema->{Max}{y}) { $Extrema->{Max}{y} = $y }
+
+		if ($z < $Extrema->{Min}{z}) { $Extrema->{Min}{z} = $z }
+		if ($z > $Extrema->{Max}{z}) { $Extrema->{Max}{z} = $z }
+	}
+
+	for ( qw/x y z/ ) {
+		# determine the overall distance from the smallest point on an axis to the largest
+		$Range->{$_} = $Extrema->{Max}{$_} - $Extrema->{Min}{$_};
+		
+		# the centred position on an axis is -($Range/2)..+($Range/2)
+		# CentreDiff is the value that has to be added to the axis value to centre the whole thing
+		$CentreDiff->{$_} = ($Range->{$_}/2) - $Extrema->{Max}{$_};
+	}
+
+	# nove all atoms about the calculated difference
+	foreach $Line ( @{$PDB} ) {
+		if (not defined $Line->{Coord}) {
+			next; # if it is not an atom entry, skip it
+		}
+		else {	
+			$Coord = $Line->{Coord};
+		
+			# move the coordinate about the diff value to centre it
+			$Coord->{x} = $Coord->{x} + $CentreDiff->{x};
+			$Coord->{y} = $Coord->{y} + $CentreDiff->{y};
+			$Coord->{z} = $Coord->{z} + $CentreDiff->{z};
+			
+			&FormatNumber ($Coord);
+			
+			substr ($Line->{Line}, 30, 8) = $Coord->{x};
+			substr ($Line->{Line}, 38, 8) = $Coord->{y};
+			substr ($Line->{Line}, 46, 8) = $Coord->{z};
+		}
+	}
+
+	return $CentreDiff;
+} # of sub CentrePDB
+
+
+sub RevertCentreing { # moves the PDB back about the difference used to centre it before
+	my $PDB = shift;
+	my $CentreDiff = shift;
+	
+	my ($Line, $Coord);
+	
+	foreach $Line ( @{$PDB} ) {
+		if (not defined $Line->{Coord}) {
+			next; # if it is not an atom entry, skip it
+		}
+		else {	
+			$Coord = $Line->{Coord};
+
+			# revert the translation done before to centre the structure
+			$Coord->{x} = $Coord->{x} - $CentreDiff->{x};
+			$Coord->{y} = $Coord->{y} - $CentreDiff->{y};
+			$Coord->{z} = $Coord->{z} - $CentreDiff->{z};
+			
+			&FormatNumber ($Coord);
+			
+			substr ($Line->{Line}, 30, 8) = $Coord->{x};
+			substr ($Line->{Line}, 38, 8) = $Coord->{y};
+			substr ($Line->{Line}, 46, 8) = $Coord->{z};
+		}
+	}
+	
+} # of sub RevertCentreing
+
+
+sub SetValueZero { # moves the PDB so that the smallest value of the given axis is zero
+	my $PDB  = shift;
+	my $Axis = shift;
+	my ($Coord, $Line, $i);
+		
+	my $Min = {};
+	
+	$Axis =~ s/0//;    # remove the trailing zero, now it's x, y or z
+	$Min->{$Axis} = 1E20;
+	
+	# find the atom with the lowest z value
+	foreach $Line ( @{$PDB} ) {
+		if (not defined $Line->{Coord}) {
+			next; # if it is not an atom entry, skip it
+		}
+		else {
+			$Coord = $Line->{Coord};
+			if ($Coord->{$Axis} < $Min->{$Axis}) {
+				$Min->{$Axis} = $Coord->{$Axis};
+			}
+		}
+	}
+	
+	# "invert" the coordinats
+	$Min->{$Axis} = $Min->{$Axis} * -1;
+	
+	# now move all atoms about the coordinates of the found atom
+	foreach $Line ( @{$PDB} ) {
+		if (not defined $Line->{Coord}) {
+			next; # if it is not an atom entry, skip it
+		}
+		else {
+			$Coord = $Line->{Coord};
+			
+			$Coord->{$Axis} = $Coord->{$Axis} + $Min->{$Axis};
+			
+			&FormatNumber ($Coord);
+			
+			if ($Axis eq "x") { substr ($Line->{Line}, 30, 8) = $Coord->{$Axis} }
+			if ($Axis eq "y") { substr ($Line->{Line}, 38, 8) = $Coord->{$Axis} }
+			if ($Axis eq "z") { substr ($Line->{Line}, 46, 8) = $Coord->{$Axis} }
+		}
+	}
+} # of SetValueZero
+
+
+sub Rotation { # rotation about an arbitrary axis
+	# Rotates a given point about an arbitrary axis u about a given angle
+	# See Anton & Rorres, Elementary Linear Algebra (Applications Version)
+	# 8th Edition, page 181
+	
+	my $Coord  = shift;
+	my $Angle  = shift;
+	my $Axis   = shift;
+	
+	my ($x, $y, $z, @xMat, @yMat, @zMat, $ux, $uy, $uz, $Fac);
+	
+	$ux = $Axis->{x};
+	$uy = $Axis->{y};
+	$uz = $Axis->{z};
+	
+	$Fac = 1 - cos $Angle;
+	
+	# build the rotation matrix
+	@xMat = ( $ux*$ux * $Fac +       cos $Angle,   $uy*$ux * $Fac - $uz * sin $Angle,   $uz*$ux * $Fac + $uy * sin $Angle );
+	@yMat = ( $ux*$uy * $Fac + $uz * sin $Angle,   $uy*$uy * $Fac +       cos $Angle,   $uz*$uy * $Fac - $ux * sin $Angle );
+	@zMat = ( $ux*$uz * $Fac - $uy * sin $Angle,   $uy*$uz * $Fac + $ux * sin $Angle,   $uz*$uz * $Fac +       cos $Angle );
+	
+	# multiply the vector with the rotation matrix
+	$x = $Coord->{x} * $xMat[0] + $Coord->{y} * $xMat[1] + $Coord->{z} * $xMat[2];
+	$y = $Coord->{x} * $yMat[0] + $Coord->{y} * $yMat[1] + $Coord->{z} * $yMat[2];
+	$z = $Coord->{x} * $zMat[0] + $Coord->{y} * $zMat[1] + $Coord->{z} * $zMat[2];
+	
+	$Coord->{x} = $x;
+	$Coord->{y} = $y;
+	$Coord->{z} = $z;
+} # of sub Rotation
+
+
+sub Translation { # translation of the coordinates
+	my $Coord  = shift;  # hash with the coordinates
+	my $Value  = shift;
+	my $Vector = shift;
+	
+	$Coord->{x} = $Coord->{x} + $Vector->{x} * $Value;
+	$Coord->{y} = $Coord->{y} + $Vector->{y} * $Value;
+	$Coord->{z} = $Coord->{z} + $Vector->{z} * $Value;
+} # of sub Translation
+
+
+sub FormatNumber { # formats the coordinates to fit into the PDB file
+	my $Coord = shift;  # hash with the coordinates
+	
+	$Coord->{x} = sprintf ("$NumberFormat", $Coord->{x});
+	$Coord->{y} = sprintf ("$NumberFormat", $Coord->{y});
+	$Coord->{z} = sprintf ("$NumberFormat", $Coord->{z});
+} # of sub FormatNumber
+
+
+sub Norm { # calculates the length of a vector
+	my $Vector = shift;
+	my $Norm;
+	
+	if (not defined $Vector->{x} or not defined $Vector->{y} or not defined $Vector->{z}) {
+		 return undef;
+	}
+	
+	$Norm = sqrt ( $Vector->{x}**2 + $Vector->{y}**2 + $Vector->{z}**2 );
+	
+	return $Norm;
+} # of sub &Norm
+

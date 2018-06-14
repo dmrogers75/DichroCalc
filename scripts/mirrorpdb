@@ -1,0 +1,83 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    mirrorpdb
+#
+# Function:   Multiplies all atom coordinates with -1.
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3869 $, $Date: 2009-02-11 18:29:48 +0000 (Wed, 11 Feb 2009) $
+#
+# Date:       July 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use ParsePDB;                        # to parse PDB files
+use DebugPrint;                      # handy during debugging
+use GetParameters;                   # to handle command line parameters
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {     # create an anonymous hash
+	o    => "string",
+	rest => "stringlist[1]*",
+};
+
+my $Options = {       # create an anonymous hash
+};
+
+my $Help = "\n" .
+"Usage:   mirrorpdb file.pdb [-o output.pdb]\n" .
+"\n" .
+"         If no output file is defined the output is written to file.mirror.pdb\n" .
+"\n";
+
+####################################################################################################
+
+GetParameters ($Parameters, $Options, $Help);
+
+my ($File, $OutFile, $PDB, $Atom, @AtomIndex, $Line);
+
+$File = shift @{$Options->{rest}};
+
+$PDB = ParsePDB->new (FileName => $File);
+$PDB->Parse;
+
+if ($Options->{o}) { $OutFile = shift @{$Options->{o}} }
+else {
+	$OutFile = $File;
+	$OutFile =~ s/\.pdb$//;
+	$OutFile = $OutFile . ".mirror.pdb";
+}
+
+open PDB, ">$OutFile";
+
+print PDB $PDB->GetHeader;
+
+@AtomIndex = $PDB->Get (Model => 0, AtomIndex => 1);
+
+foreach $Atom ( @AtomIndex ) {
+	foreach ( qw/x y z/ ) {
+		# multiply each coordinate with -1
+		if ($Atom->{$_}) {
+			$Atom->{$_} = $Atom->{$_} * -1;
+			$Atom->{$_} = sprintf "%.3f", $Atom->{$_};
+		}
+	}
+
+	$Line = $PDB->FormatLine (Atom => $Atom);
+	print PDB $Line;
+}
+
+print PDB $PDB->GetFooter;
+close PDB;
+

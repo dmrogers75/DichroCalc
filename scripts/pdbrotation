@@ -1,0 +1,139 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    pdbrotation
+#
+# Function:   Creates a rotation about 360 degrees about a specific axis with all structures in it
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3894 $, $Date: 2009-02-11 18:31:02 +0000 (Wed, 11 Feb 2009) $
+#
+# Date:       April 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use GetParameters;                   # to parse command line parameters
+use DebugPrint;                      # handy during debugging
+
+###################################################################################################
+## Configuration for GetParameters
+#####################################################################################################
+
+my $Parameters = {     # create an anonymous hash
+   i    => "string",
+   x    => "switch",
+   y    => "switch",
+   z    => "switch",
+   gif  => "switch",
+   res  => "string",
+};
+
+my $Options = {       # create an anonymous hash
+   i    => 30,
+   res  => "1024,768",
+   x    => 0,
+   y    => 0,
+   z    => 0,
+};
+
+my $Help = "\n" .
+           "Usage:   pdbrotation [-x | y | z] [-gif] [-i 30] [-res 1024,768] file.pdb\n" .
+           "\n" .
+           "  -gif   create GIF images instead of PS files\n" .
+           "  -i     the interval in degrees for the rotation\n" .
+           "  -res   defines the resolution in pixels for the (GIF!) images\n" .
+           "  -x     rotate about the x axis\n" .
+           "  -y     rotate about the y axis\n" .
+           "  -z     rotate about the z axis\n" .
+           "\n" .
+           "Creates plots of a rotation around the given axis with all structures shown.\n" .
+           "\n";
+
+#####################################################################################################
+
+my ($Angle, $InFile, $Max, $CurFile, @Files, $Format);
+
+GetParameters ($Parameters, $Options, $Help);
+
+if ($Options->{x} + $Options->{y} + $Options->{z} > 1) {
+	print STDERR "\nERROR: Only one axis may be defined!\n$Help";
+	exit 1;
+}
+
+if    ($Options->{x}) { $Options->{Axis} = "x" }
+elsif ($Options->{y}) { $Options->{Axis} = "y" }
+elsif ($Options->{z}) { $Options->{Axis} = "z" }
+                 else { $Options->{Axis} = "x" }
+
+if ($Options->{gif}) {
+	$Format = "-gif -res $Options->{res}";
+}
+else {
+	$Format = "";
+}
+
+if (not $Options->{rest}) {
+	print STDERR "\nERROR: No file given!\n$Help";
+	exit 2;
+}
+
+$InFile = shift @{$Options->{rest}};
+$Options->{BaseName} = $InFile;
+$Options->{BaseName} =~ s/\.pdb$//;
+
+$Max = &GetMaximum ($InFile);
+
+$Angle = "000";
+
+until ($Angle > 360) {
+	$CurFile = $Options->{BaseName}.".r$Angle";
+
+	system "translatepdb $InFile r$Options->{Axis} $Angle $CurFile.pdb";
+	system "plotpdb $CurFile.pdb " .
+	       "-x -$Max:$Max -y -$Max:$Max -z -$Max:$Max " .
+			 "$Format -nokey -zero$Options->{Axis} -o $CurFile";
+
+	push @Files, $CurFile;
+
+	$Angle = $Angle + $Options->{i};
+	until (length $Angle == 3) { $Angle = "0" . $Angle }
+}
+
+
+#####################################################################################################
+# SUBROUTINES
+#####################################################################################################
+
+sub GetMaximum { # determines the biggest coordinate in the PDB
+	my $File = shift;
+	my ($i, $Max, @Content, $Line, $x, $y, $z);
+	
+	$Max = -10E20;
+
+	open FILE, "<$File";
+	@Content = <FILE>;
+	close $File;
+
+	for $i (0 .. $#Content) {
+		$Line = shift @Content;
+		
+		if ($Line !~ m/^ATOM/) { next }
+		
+		$x = substr ($Line, 30, 8); $x =~ s/\s//g;
+		$y = substr ($Line, 38, 8); $y =~ s/\s//g;
+		$z = substr ($Line, 46, 8); $z =~ s/\s//g;
+		
+		if ($x > $Max) { $Max = $x }
+		if ($y > $Max) { $Max = $y }
+		if ($z > $Max) { $Max = $z }
+	}
+
+	return $Max;
+}

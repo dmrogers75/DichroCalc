@@ -1,0 +1,137 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+# 
+# Program:    filesplit
+#
+# Function:   Splits a list of given files into smaller pieces of defined size (similar to the shell
+#             command "split", merely a bit better configurable) or into a defined amount of pieces.
+#
+#             Input:   test.ext     3.5 MB
+#
+#             Output:  test-01.ext  1.5 MB
+#                      test-02.ext  1.5 MB
+#                      test-03.ext  0.5 MB
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 2945 $, $Date: 2008-04-28 17:13:10 +0100 (Mon, 28 Apr 2008) $
+# 
+# Date:       November 2006
+#
+####################################################################################################
+
+use strict;
+use FindBin qw/$Bin/;               # set $Bin to the directory of th script
+use lib "$ENV{HOME}/bin/perllib";   # add ~/bin/perllib to the library path
+use Data::Dumper;                   # for easy printout of arrays and hashes
+use File::Copy;                     # to rename the files afterwards
+use DebugPrint;                     # handy during debugging
+use GetBaseName;                    # to split up a filename into base name and extension
+use GetParameters;                  # to parse the command line parameters
+
+####################################################################################################
+# Default variables
+####################################################################################################
+
+my $Separator   = "-";  # put in between the base name and the counter
+my $Rename      = 1;    # to rename the source files after splitting (adds ".old" to filename)
+
+
+####################################################################################################
+# Configuration variables
+####################################################################################################
+
+my $Parameters = {};           # defines all possible parameters
+$Parameters->{n} = "string";   # split files into a certain number of pieces
+$Parameters->{s} = "string";   # split files by a certain size
+
+my $Options = {};              # holds default values and (after parsing) the given parameters
+
+my $Help = "\n" .          # displayed when an error was found or -h was given
+	"Usage:   filesplit file1 [file2] [...] [-s SIZE] [-n NUMBER]\n\n" .
+	"         -s   split files by size SIZE (in MB)\n" .
+	"         -n   split files in NUMBER of pieces\n" .
+	"\n";
+
+
+####################################################################################################
+
+my ($File, @Files, $Size, $OldSize, $Line, $CurSize, $Pos);
+my ($BaseName, $Extension, $Counter);
+
+
+GetParameters ($Parameters, $Options, $Help);
+
+if ($Options->{s} and $Options->{n}) {
+	print STDERR "\nERROR: Only parameter -s or -n is possible!\n\n";
+	exit 1;
+}
+elsif (not $Options->{s} and not $Options->{n}) {
+	print STDERR "\nERROR: Please choose -s or -n to process files!\n\n";
+	exit 2;
+}
+elsif ($Options->{s} and $Options->{s} !~ m/^[\d.]+$/) {
+	print STDERR "\nERROR: Given size not a number!\n\n";
+	exit 3;
+}
+elsif ($Options->{n} and $Options->{n} !~ m/^[\d]+$/) {
+	print STDERR "\nERROR: Given number is not an integer!\n\n";
+	exit 3;
+}
+elsif (not $Options->{rest}) {
+	print STDERR "\nERROR: No files given to process!\n\n";
+	exit 4;
+}
+
+foreach $File ( @{$Options->{rest}} ) {
+	# check each file for existence before beginning the process
+	if (-f $File) {
+		push @Files, $File;
+		next;
+	}
+	else {
+		print STDERR "\nERROR: File $File not found!\n\n";
+		exit 5;
+	}
+}
+
+if ($Options->{s}) {
+	$Size = $Options->{s} * 1024 * 1024;   # covert to bytes
+}
+
+foreach $File (@Files) {
+	($BaseName, $Extension) = SplitFileName ($File);
+
+	open FILE, "<$File";
+
+	if ($Options->{n}) {
+		$OldSize = -s FILE;
+		$Size = sprintf ("%.0f", $OldSize / $Options->{n});
+	}
+
+	$CurSize = 0;
+	$Counter = "01"; # the leading 0 is maintained if defined as string 
+
+	open SPLITFILE, ">$BaseName-$Counter.$Extension";
+
+	while (read FILE, $Line, 1024) {  # read 1024 bytes from the file
+		if ($CurSize >= $Size) {       # if the requested size has been reached
+			close SPLITFILE;
+			++$Counter;
+			open SPLITFILE, ">$BaseName$Separator$Counter.$Extension";
+			$CurSize = 0;
+		}
+
+		print SPLITFILE $Line;
+		$CurSize = $CurSize + 1024;
+	}
+
+	close SPLITFILE;
+	close FILE;
+
+	if ($Rename) {
+		move ($File, "$File.old");
+	}
+}
+

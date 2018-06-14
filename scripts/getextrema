@@ -1,0 +1,59 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    getextrema
+#
+# Function:   Outputs the minimum and maximum values for wavelength and intensity of xy-data files
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 4180 $, $Date: 2009-03-28 21:14:02 +0000 (Sat, 28 Mar 2009) $
+#
+# Date:       February 2004
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use ReadSpectrum;                    # for reading in xy data
+
+my (@AllFiles, $File, @Content, $Value);
+
+if (scalar @ARGV < 1) {
+	print STDERR "\n\nUsage:   getextrema file1 [file2] [...]\n\n";
+	exit 1;
+}
+
+@AllFiles = @ARGV;
+ 
+print "\n";
+print "File                   WL Min    WL Max     Int Min      Int Max \n";
+print "-----------------------------------------------------------------\n";
+
+foreach $File (@AllFiles) {
+	@Content = ReadSpectrum ($File);
+	
+	if (not @Content) { next }
+	
+	my $WLMin  =  1E20;
+	my $IntMin =  1E20;
+	my $WLMax  = -1E20;
+	my $IntMax = -1E20;
+
+	foreach $Value (@Content) {
+		if ($Value->[0] < $WLMin ) { $WLMin  = $Value->[0] }
+		if ($Value->[0] > $WLMax ) { $WLMax  = $Value->[0] }
+		if ($Value->[1] < $IntMin) { $IntMin = $Value->[1] }
+		if ($Value->[1] > $IntMax) { $IntMax = $Value->[1] }
+	}
+
+	printf "%-20s   %6.2f    %6.2f    %9.2f    %9.2f\n", $File, $WLMin, $WLMax, $IntMin, $IntMax;
+} # of foreach $File (@AllFiles)
+
+print "\n";
+

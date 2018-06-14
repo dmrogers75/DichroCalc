@@ -1,0 +1,102 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    combine-pdbfiles
+#
+# Function:   Combines the first model of all given PDB files in one file
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3857 $, $Date: 2009-02-11 16:23:56 +0000 (Wed, 11 Feb 2009) $
+#
+# Date:       December 2006
+#
+####################################################################################################
+
+use strict;                         # always use this!!!
+use lib "$ENV{HOME}/bin/perllib";   # add ~/bin/perllib to the library path
+use DebugPrint;                     # handy during debugging
+use ParsePDB;                       # to parse PDB files
+use GetParameters;                  # to parse the command line parameters
+
+
+####################################################################################################
+# Configuration Variables
+####################################################################################################
+
+my $NoHETATM = 1;
+
+
+####################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {
+	o => "string",
+};
+
+my $Options = {};
+
+my $Help = "\n" .
+	        "Usage:   combine-pdbfiles file1 file2 [file3] [-o outfile]\n" . 
+	        "\n";
+
+####################################################################################################
+
+my ($File, $OutFile, $PDB, @AllPDBs, $Header, $Chains, $ChainLabel);
+
+GetParameters ($Parameters, $Options, $Help);
+
+if (not defined $Options->{rest}) {
+	print STDERR "\nERROR: No files defined to process!\n\n";
+	exit 1;
+}
+
+if (scalar @{$Options->{rest}} < 2) {
+	print STDERR "\nERROR: More than one file needs to be defined to combine something!\n\n";
+	exit 2;
+}
+
+if ($Options->{o}) { $OutFile = $Options->{o} }
+else {
+	$OutFile = $Options->{rest}[0];    # take the first input file
+	$OutFile =~ s/\.pdb$//;
+	$OutFile = $OutFile . ".combined.pdb";
+}
+
+$ChainLabel = "A";
+
+while ( @{$Options->{rest}} ) {
+	$File = shift @{$Options->{rest}};
+	print "Processing $File...\n";
+	
+	# create a new object and parse the PDB file
+	$PDB = ParsePDB->new (FileName => $File, NoHETATM => $NoHETATM, NoANISIG => 1, Verbose => 0);
+	
+	# save the number of chains in the first model
+	$Chains = $PDB->CountChains (Model => 0);
+	
+	# retrieve the first model and renumber the chains starting with the current chain label
+	my @Model = $PDB->Get (Model => 0, ChainStart => $ChainLabel);
+	
+	# add a TER to the last chain if it's not already present
+	if ($Model[$#Model] !~ m/^TER/) { push @Model, "TER" . " "x76 . "\n"; }
+	
+	# add the current model to the array with all others
+	push @AllPDBs, @Model;
+
+	# increase the chain label about the number of chains to renumber the next PDB correctly
+	for ( 1..$Chains ) { ++$ChainLabel }
+}
+
+$Header = "HEADER    $OutFile created with combine-pdbfiles";
+
+while (length $Header < 80) { $Header = $Header . " " }
+
+open FILE, ">$OutFile";
+print FILE $Header, "\n";
+print FILE @AllPDBs;
+print FILE "END", " "x76, "\n";
+close $OutFile;
+

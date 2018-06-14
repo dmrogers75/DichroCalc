@@ -1,0 +1,150 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    comparesequences
+#
+# Function:   Compares the sequences of two chains (simple string comparison)
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 2945 $, $Date: 2008-04-28 17:13:10 +0100 (Mon, 28 Apr 2008) $
+#
+# Date:       October 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use GetParameters;                   # to handle command line parameters
+use ParsePDB;                        # to handle PDB files
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {     # create an anonymous hash
+	c => "list",
+};
+
+my $Options = {       # create an anonymous hash
+};
+
+my $Help = "\n" .
+"Usage:   comparesequences file1 file2 -c chainnumbers\n" .
+"\n" .
+"         -c define the chains to be compared, e.g. -c  1 1  1 2  1 3  means\n" .
+"            chain 1 in file 1 is compared to chain 1 in file 2\n" .
+"            chain 1 in file 1 is compared to chain 2 in file 2\n" .
+"            chain 1 in file 1 is compared to chain 3 in file 2\n" .
+"\n";
+
+####################################################################################################
+
+my ($PDB1, $PDB2, $String, $Length, $Chain, $Chain1, $Chain2, $Seq1, $Seq2, $Residue, $Number);
+
+GetParameters ($Parameters, $Options, $Help);
+
+if (not $Options->{rest} or $#{$Options->{rest}} != 1) {
+	print STDERR "\nERROR: Exactly two files are needed.\n\n";
+	exit 1;
+}
+
+my $File1 = {};
+my $File2 = {};
+
+$File1->{Name} = shift @{$Options->{rest}};
+$File2->{Name} = shift @{$Options->{rest}};
+
+$PDB1 = ParsePDB->new (FileName => $File1->{Name}, NoHETATM => 1, NoANISIG => 1);
+$PDB2 = ParsePDB->new (FileName => $File2->{Name}, NoHETATM => 1, NoANISIG => 1);
+
+$File1->{Chains} = $PDB1->CountChains;
+$File2->{Chains} = $PDB2->CountChains;
+
+if (not defined $Options->{c}) {
+	$Options->{c} = [];    # create an array reference;
+	
+	# if no special requests are given, chain1 is compared to chain2, 2 to 2, 3 to 3, etc.
+	for ( 1 .. $File1->{Chains} ) {
+		# if this chain is also defined for PDB2, compare it with the one from PDB1
+		# -1, because the "Chain" keyword is used for ParsePDB and starts counting at 0
+		if ($_ <= $File2->{Chains}) { push @{$Options->{c}}, ($_-1, $_-1) }
+	}
+}
+
+printf "%20s: %5d\n",   $File1->{Name}, $File1->{Chains};
+printf "%20s: %5d\n\n", $File2->{Name}, $File2->{Chains};
+
+print "Comparing the following chains:\n\n";
+
+for $Chain (0 .. $#{$Options->{c}}-1) {
+	# the loop is only executed for 0 and even values, since uneven values refer to file 2
+	# hence, if $Chain is not 0 or can be divided by 2, go on with the next counter	
+	if ($Chain % 2 != 0) { next }
+	
+	$Chain1 = $Options->{c}[$Chain];
+	$Chain2 = $Options->{c}[$Chain+1];
+
+	$String = $File1->{Name} . ", chain $Chain1   with   " . $File2->{Name} . " , chain $Chain2\n";
+	
+	print $String;
+	$Length = length ($String) -1;  # the -1 accounts for the \n
+	print "-"x$Length, "\n\n";      # print the line under the header
+	
+	if (not $File1->{"Chain$Chain1"}) {
+		# create array references for the chain labels
+		$File1->{"Chain$Chain1"} = [];
+
+		# fill the actual arrays
+		@{$File1->{"Chain$Chain1"}} = $PDB1->IdentifyResidueLabels (Model => 0, Chain => $Chain1-1, OneLetterCode => 1);
+		$File1->{"Seq$Chain1"} = join "", @{$File1->{"Chain$Chain1"}};
+	}
+	
+	if (not $File2->{"Chain$Chain2"}) {
+		# create array references for the chain labels
+		$File2->{"Chain$Chain2"} = [];
+
+		# fill the actual arrays
+		@{$File2->{"Chain$Chain2"}} = $PDB2->IdentifyResidueLabels (Model => 0, Chain => $Chain2-1, OneLetterCode => 1);
+		$File2->{"Seq$Chain2"} = join "", @{$File2->{"Chain$Chain2"}};
+	}
+	
+	$Seq1 = $File1->{"Seq$Chain1"};   # used as abbreviation
+	$Seq2 = $File2->{"Seq$Chain2"};   # used as abbreviation
+	
+	if ($Seq1 eq $Seq2) { print "EQUAL!\n"             }
+	else { 
+		if (length $Seq1 < length $Seq2) {
+			if ($Seq2 =~ m/$Seq1/) {
+				print "The chains differ, but chain sequence 1 is contained in chain 2!\n";
+			}
+			else {
+				print "The chains differ!\n";
+			}
+		}
+		elsif (length $Seq1 > length $Seq2) {
+			if ($Seq1 =~ m/$Seq2/) {
+				print "The chains differ, but chain sequence 2 is contained in chain 1!\n";
+			}
+			else {
+				print "The chains differ, chain 1 is longer than chain 2!\n";
+			}
+		}
+		else {
+			print "The chains differ, their length is equal!\n";
+		}
+	}
+	
+	# open  FILE, ">comp";
+	# print FILE "$Seq1\n$Seq2\n";
+	# close FILE;
+
+}
+
+print "\n";
+

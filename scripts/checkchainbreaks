@@ -1,0 +1,181 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    checkchainbreaks
+#
+# Function:   Detects excessive CA-C distances between residues and writes a corrected PDB with
+#             added chain breaks where necessary
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 2945 $, $Date: 2008-04-28 17:13:10 +0100 (Mon, 28 Apr 2008) $
+#
+# Date:       March 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use GetParameters;                   # to handle command line parameters
+use ParsePDB;                        # to read and parse PDB files
+
+
+####################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {};   # create an anonymous hash
+$Parameters->{e}  = "string";
+$Parameters->{f}  = "switch";
+
+my $Options = {};     # create an anonymous hash
+$Options->{e} = "new.pdb";
+
+my $Help = "\n" .
+           "Usage:   checkchainbreaks [-f] [-e extension] file.pdb\n" .
+           "   -f    fix, only with this switch the files are corrected\n" .
+           "   -e    extension for the new file, if omitted, the original file is overwritten\n" .
+           "         the old pdb extension is removed and then the given one added\n" .
+           "\n";
+
+####################################################################################################
+
+my ($PDB, $File, $OutFile);
+
+GetParameters ($Parameters, $Options, $Help);
+
+$Options->{e} =~ s/^\.//;  # remove a leading dot
+
+foreach $File ( @{$Options->{rest}} ) {
+	# currently only one outfile can be given, which is a bit dumb if many files are to be processed
+	&CheckChainBreaks ($File, $Options->{e}, $Options->{f});
+}
+
+
+####################################################################################################
+# SUBROUTINES
+####################################################################################################
+
+sub CheckChainBreaks {
+	my $File   = shift;
+	my $Ext    = shift;
+	my $Fix    = shift;
+	
+	my ($Chain, $Breaks, @ResidueIndex, $Res, $CurResidue, $NxtResidue, $Distance, @Content);
+	my ($ChangeLabel, $CurLabel, $ChainLabels, $OutFile);
+	
+	print "$File:\n";
+	$PDB = ParsePDB->new (FileName => $File, NoHETATM => 1, NoANISIG => 1, AtomLocations => "First");
+	
+	foreach $Chain ( $PDB->IdentifyChains (Model => 0) ) {
+		@ResidueIndex = $PDB->Get (Model => 0, Chain => $Chain, ResidueIndex => 1);
+		
+		foreach $Res (0 .. $#ResidueIndex - 1) {
+			$CurResidue = $ResidueIndex[$Res];
+			$NxtResidue = $ResidueIndex[$Res+1];
+			$Distance = &Distance ( &GetAtom ($CurResidue, "C"), &GetAtom ($NxtResidue, "N") );
+			
+			if (not $Distance) {
+				push @{$Breaks->{$Chain}}, $Res;
+			}
+			else {
+				if ($Distance > 1.8) {
+					print "   Distance $Distance detected between ";
+					print "$CurResidue->{ResidueNumber} $CurResidue->{ResidueLabel} and ";
+					print "$NxtResidue->{ResidueNumber} $NxtResidue->{ResidueLabel}\n";
+					
+					push @{$Breaks->{$Chain}}, $Res;
+				}
+			}
+		} # of foreach $Res (0 .. $#ResidueIndex - 1) {
+	} # of foreach $Chain ()
+	
+	if ($Breaks and $Fix) { # if any breaks were detected
+		$OutFile = $File;
+		$OutFile =~ s/\.pdb$//;
+		$OutFile = "$OutFile.$Ext";
+
+		# retrieve all labels in that chain and join them together as string
+		$ChainLabels = join "", $PDB->IdentifyChainLabels (Model => 0);
+		$CurLabel = "A";
+		
+		open  PDB, ">$OutFile";
+		print PDB $PDB->GetHeader;
+		
+		foreach $Chain ( $PDB->IdentifyChains (Model => 0) ) {
+			$ChangeLabel = 0;
+			
+			foreach $Res (0 .. $PDB->CountResidues (Model => 0, Chain => $Chain)-1) {
+				@Content = $PDB->Get (Model => 0, Chain => $Chain, Residue => $Res);
+				
+				if ($ChangeLabel) { &ChangeChainLabel (\@Content, $CurLabel) }
+				
+				print PDB join "", @Content;
+				if (defined $Breaks->{$Chain}[0] and $Breaks->{$Chain}[0] == $Res) {
+					print PDB "TER", " "x77, "\n";
+					$ChangeLabel = 1;
+					
+					# find a label which has not been used before
+					until ($ChainLabels !~ m/$CurLabel/) { ++$CurLabel }
+					$ChainLabels = $ChainLabels . $CurLabel;
+					
+					# delete the first break in the array as it has bee taken into account
+					shift @{$Breaks->{$Chain}};
+				}
+			}
+			
+			print PDB "TER", " "x77, "\n";
+		}
+		
+		print PDB $PDB->GetFooter;
+		close PDB;
+	}
+	
+	print "\n";
+	return 1;
+} # of sub DeletePDBAtoms
+
+
+sub GetAtom { # finds the atom with a given label in a residue hash
+	my $Residue = shift;
+	my $Label   = shift;
+	my $Atom;
+	
+	foreach $Atom ( @{$Residue->{Atoms}} ) {
+		if ($Atom->{AtomType} eq $Label) { return $Atom }
+	}
+	
+	print "Atom $Label not found in Residue $Residue->{ResidueNumber} $Residue->{ResidueLabel}!\n";
+	
+	return undef;
+} # of sub GetAtom
+
+
+sub Distance { # calculates the distance between two atoms
+	my $Point1 = shift;
+	my $Point2 = shift;
+	
+	if (not $Point1 or not $Point2) { return }
+	
+	my $Distance =  sqrt (   ( $Point1->{x} - $Point2->{x} )**2
+	                       + ( $Point1->{y} - $Point2->{y} )**2
+	                       + ( $Point1->{z} - $Point2->{z} )**2 );
+	
+	return sprintf "%.3f", $Distance;
+} # of sub Distance
+
+
+sub ChangeChainLabel { # changes the chain label in an array of PDB lines
+	my $Content = shift;
+	my $Label   = shift;
+	my $Line;
+	
+	foreach $Line ( 0 .. $#{$Content} ) {
+		substr ($Content->[$Line], 21, 1) = $Label;
+	}
+} # of sub ChangeChainLabel

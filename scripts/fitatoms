@@ -1,0 +1,931 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    fitatoms
+#
+# Function:   Reads in seward.inp with coordinates for formamide
+#             Reads a .kor file with the coordinates of the monpoles of a dimer, fitted by matmac
+#             Fits one group of the dimer to the formamide (i.e. C,N,O), shifting and turning the
+#             monopoles and writes a seward.inp with the monopoles as XFIELD-charges
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3940 $, $Date: 2009-02-12 18:13:02 +0000 (Thu, 12 Feb 2009) $
+#
+# Date:       February 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use DebugPrint;                      # handy during debugging
+use GetParameters;                   # for handling of command line parameters
+use ReadMolcas;                      # to read molcas input/output files
+use ReadMatmac;                      # to read matmac output files
+use VectorMath;                      # for several vector operations
+
+
+####################################################################################################
+# Configuration Variable
+####################################################################################################
+
+my $PlotKorData    = 0;
+my $PlotSewardData = 1;
+
+
+####################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {
+	o     => "string",
+	g     => "string",
+	t     => "string",
+#	a     => "list",
+	p     => "switch",
+	b     => "switch",
+	i     => "string",
+};
+
+my $Options = {
+	o  => "seward.new",
+	i  => "seward.inp",
+	t  => "3",
+	g  => 0,
+};
+
+my $Help = "\n" .
+           "Usage:   fitatoms infile.kor [-g group] [-t transition] [-b] [-i infile] [-o outfile] [-p]\n" .
+           "         -g   the group from the kor file which is fitted to the one in seward.inp\n" .
+           "              counting starts at 0! Default is group $Options->{g}.\n" .
+           "         -t   the transition whose monopoles are to be taken, default is $Options->{t}\n" .
+#           "         -a   to define the sequence of the C, N, O atoms in the .kor file.\n" .
+           "         -i   to define the input file, default is $Options->{i}\n" .
+           "         -o   to define the outfile, default is $Options->{o}\n" .
+           "         -p   plot the new seward.inp\n" .
+			  "         -b   use balance points and charges instead of multiple ones per atom\n" .
+           "\n" .
+           "         The file seward.inp needs to be in the current directory and the labels of.\n" .
+           "         of the peptide atoms (C, N & O) must be unique.\n" .
+           "\n";
+
+
+####################################################################################################
+# Configuration for PlotData
+####################################################################################################
+
+my $PlotData = {
+	BaseName => "kordata",    # default basename for several files written while plotting
+	CommandFile => "kordata", # default filename for the gnuplot command file
+	OutFile => "kordata",     # default output file for gnuplot
+	KeepGnuplotAlive => 1,    # whether to save a ps file or keep gnuplot alive
+	
+	ShowKey => 0,             # whether to show the legend or not
+	LabelPosition => 3,       # defines the offset of the atom labels from the actual atom position
+	DeleteXYZFiles => 1,      # remove the xyz-gnuplot files after exiting gnuplot
+	
+	Format => '%.6f',         # format string used by sprintf and printf (if output is exported to a spreadsheet set to e.g. ".4f")
+	
+	View => "0,0",            # defines the view (rotation around x, rotation around y)
+	Size => "1,1",            # sets the size of the plot, default is "1,1"
+	Square => 1,              # whether to force a square or not
+	GlobalMaximum => 0,       # whether all axes should have the same scale
+	
+	XRange => "5",            # if "true", the xRange will be set to -$PlotData->{XRange}:$PlotData->{XRange}, otherwise the maximum value is taken (what distorts the plot)
+	YRange => "5",            # if "true", the yRange will be set to -$PlotData->{ZRange}:$PlotData->{ZRange}, otherwise the maximum value is taken (what distorts the plot)
+	ZRange => "5",            # if "true", the zRange will be set to -$PlotData->{ZRange}:$PlotData->{ZRange}, otherwise the maximum value is taken (what distorts the plot)
+	ZAxisLabels => 0,         # set to "false" to remove the labels along the z-axis
+	
+	xTics => 0,               # tic interval of x axis, if "0", the maximum x value is taken to determine the tic interval
+	yTics => 0,               # tic interval of x axis, if "0", the maximum y value is taken to determine the tic interval
+	zTics => 0,               # tic interval of x axis, if "0", the maximum z value is taken to determine the tic interval
+	
+	ShowGroups => -1,         # -1 = show all groups, 0 = show only group 0, 01 = show groups 0 and 1
+	ShowBonds  => 0,          # whether the bond lines should be printed
+	ShowAtoms => 1,           # show the atoms yes or no
+	
+	ShowMonopoles => 1,       # whether to show the monopoles or not
+	ShowChargeLabel => 1,     # whether to show the monopole charge
+	RoundCharges => 1,        # whether to round the monopole charges or not
+	
+	ShowTransitions => '-1',  # -1 = All transitions, 0 = only first transition, 012 = 1st, 2nd, and 3rd transition (needs to be STRING for that feature...)
+	ShowAtomLabels => 1,      # show the atom labels (C1, N1, O1, ...)
+	ShowHydrogen => 1,        # show or omit the hydrogen
+};
+
+####################################################################################################
+
+my $KorData = [];
+my $Seward  = {};
+my ($File, $KorFile, $KorBaseName);
+
+GetParameters ($Parameters, $Options, $Help);
+
+if (not $Options->{rest}) {
+	print STDERR "\nERROR: No .kor filename given!\n$Help";
+	exit 1;
+}
+
+$KorFile = shift @{$Options->{rest}};
+
+if (scalar @{$Options->{rest}} > 0) {
+	print STDERR "\nERROR: Could not interpret $Options->{rest}[0]!\n$Help";
+	exit 2;
+}
+
+if (not $KorFile) {
+	if (-f "$KorFile.kor") {
+		$KorBaseName = $KorFile;
+		$KorFile = $KorFile . ".kor";
+	}
+	else {
+		print STDERR "\nERROR: File $KorFile not found!\n";
+		exit 3;
+	}
+}
+else {
+	$KorBaseName = $KorFile;
+	$KorBaseName =~ s/\.kor$//;
+}
+
+####################################################################################################
+# Read seward.inp and .kor file
+
+unless (ReadSewardInp ($Seward, $Options->{i})) {
+	print STDERR "\nERROR reading seward.inp!\n";
+	exit 1;
+}
+
+unless (ReadKorFile ($KorBaseName, $KorData)) {
+	print STDERR "\nERROR reading $KorBaseName.kor!\n";
+	exit 4;
+}
+
+$Seward->{OutFile} = $Options->{o};
+
+####################################################################################################
+# Align the molecules and write output file
+
+&Align        ($Seward, $KorData, $Options->{g});
+&FitDistances ($Seward, $KorData, $Options->{g});
+&AddCharges   ($Seward, $KorData, $Options->{g}, $Options->{t}, $Options->{b});
+
+unless ( WriteSewardInp ($Seward) ) {
+	print STDERR "\nERROR writing seward.inp!\n";
+	exit 10;
+}
+
+if ($Options->{p}) {
+	#################################################################################################
+	# Create gnuplot command file and plot it
+
+	&CreateCommandFile (KorData => $KorData, Seward => $Seward, PlotData => $PlotData);
+
+	system ("gnuplot $PlotData->{CommandFile}");
+
+	if ($PlotData->{DeleteXYZFiles}) {
+		system ("rm $PlotData->{BaseName}-dummy.xyz");
+		system ("rm $PlotData->{BaseName}-atoms.xyz");
+		
+		foreach $File (@{$PlotData->{TransFiles}})   { system ("rm $File") }
+	}
+
+	print "\n\n";
+}
+
+
+
+####################################################################################################
+# SUBROUTINES
+####################################################################################################
+
+sub Align {
+	my $Seward  = shift;
+	my $KorData = shift;
+	my $Group   = shift;
+	
+	my (@Transformations, $Vector1, $Vector2, $Angle, $Cross);
+	my $xAxis = { x => 1, y => 0, z => 0 };
+	my $yAxis = { x => 1, y => 1, z => 0 };
+	my $zAxis = { x => 0, y => 0, z => 1 };
+	
+	
+	#################################################################################################
+	# Move C to the origin
+	#################################################################################################
+	
+	my $SewardTrans = { Action => "t" };
+	# get the coordinates of the peptide carbon atom
+	$Vector1 = &FindAtom ("C", $Seward->{Atoms});
+	# multiply each coordinate of the carbon with -1 and save it in $Trans
+	foreach ("x", "y", "z") { $SewardTrans->{Trans}{$_} = $Vector1->{$_} * -1 }
+	# move all seward atoms (effectively moving the carbon to the origin
+	&TransformSeward ($Seward, "t", $SewardTrans->{Trans});
+	
+	# invert the operation to undo it later
+	foreach ("x", "y", "z") { $SewardTrans->{Trans}{$_} = $SewardTrans->{Trans}{$_} * -1 }
+	# save the transformation, to be able to undo it later
+	unshift @Transformations, $SewardTrans;
+	
+	# now move the KorData carbon to the origin
+	my $KorTrans;
+	$Vector1 = &FindAtom ("C", $KorData->[$Group]{Atoms});
+	foreach ("x", "y", "z") { $KorTrans->{Trans}{$_} = $Vector1->{$_} * -1 }
+	&TransformKorData ($KorData, "t", $KorTrans->{Trans});
+	
+	
+	#################################################################################################
+	# Move the CN-bond to the x-axis
+	#################################################################################################
+	
+	# get the coordinates of the peptide nitrogen atom
+	$Vector1 = &FindAtom ("N", $Seward->{Atoms});
+	# determine the angle of the CN-bond with the x-Axis
+	$Angle = &Angle ($Vector1, $xAxis);
+	# rotate all seward atoms about the z-axis so that the CN-bond aligns with the x-axis
+	&TransformSeward ($Seward, "r", -$Angle, $zAxis);
+	
+	# save the (inverted) transformation, to be able to undo it later
+	my $Transformation = { Action => "r",
+	                       Trans  => $Angle,
+	                       Axis => $zAxis,
+	                     };
+	
+	unshift @Transformations, $Transformation;
+	
+	# determine the cross product of the two CN bonds and their angle
+	$Vector1 = &FindAtom ("N", $KorData->[$Group]{Atoms});
+	$Vector2 = &FindAtom ("N", $Seward->{Atoms});
+	$Cross = CrossProduct ($Vector1, $Vector2);
+	$Angle = &Angle ($Vector1, $Vector2);
+	# rotate $KorData about the angle between the CN bonds about their cross product
+	&TransformKorData ($KorData, "r", $Angle, $Cross);
+	
+	
+	#################################################################################################
+	# Check whether the KorData has to be flipped 
+	#################################################################################################
+	
+	$Vector1 = &FindAtom ("O", $KorData->[$Group]{Atoms});
+	$Vector2 = &FindAtom ("O", $Seward->{Atoms});
+	
+	if (Distance ($Vector1, $Vector2) > 0.3) {
+		&TransformKorData ($KorData, "r", 180, $xAxis);
+	}
+	
+	#################################################################################################
+	# Move the seward atoms back to their initial positions
+	#################################################################################################
+	
+	my $Trans;
+	
+	foreach $Trans ( @Transformations ) {
+		&TransformSeward  ($Seward,  $Trans->{Action}, $Trans->{Trans}, $Trans->{Axis});
+		&TransformKorData ($KorData, $Trans->{Action}, $Trans->{Trans}, $Trans->{Axis});
+	}
+
+	return 1;
+} # of sub Align
+
+
+sub FitDistances {
+	my $Seward  = shift;
+	my $KorData = shift;
+	my $Group   = shift;
+
+	my ($Vector1, $Vector2);
+
+	$Vector1 = &FindAtom ("C", $KorData->[$Group]{Atoms});
+	$Vector2 = &FindAtom ("C", $Seward->{Atoms});
+	printf "Distance C-C:   %10.5f\n", Distance ($Vector1, $Vector2);
+
+	$Vector1 = &FindAtom ("N", $KorData->[$Group]{Atoms});
+	$Vector2 = &FindAtom ("N", $Seward->{Atoms});
+	printf "Distance N-N:   %10.5f\n", Distance ($Vector1, $Vector2);
+
+	$Vector1 = &FindAtom ("O", $KorData->[$Group]{Atoms});
+	$Vector2 = &FindAtom ("O", $Seward->{Atoms});
+	printf "Distance O-O:   %10.5f\n", Distance ($Vector1, $Vector2);
+
+	print "\n";
+	return 1;
+} # of sub FitDistances
+
+
+sub FindAtom { # returns the atom hash with a given label
+	my $Label  = shift;
+	my $Atoms  = shift;
+	my ($Atom, $Found, $Coords);
+	
+	foreach $Atom ( @{$Atoms} ) {
+		if (     (defined $Atom->{Label} and $Atom->{Label} eq $Label)    # for $Seward
+				or (defined $Atom->{Atom}  and $Atom->{Atom} eq $Label) ) { # for $KorData
+			if ($Found) {
+				print STDERR "\nERROR: Ambiguous atom labels in seward.inp, the CNO atoms of the peptide must be unique.\n\n";
+				exit 12;
+			}
+			else {
+				$Found = 1;
+				$Coords->{x} = $Atom->{x};
+				$Coords->{y} = $Atom->{y};
+				$Coords->{z} = $Atom->{z};
+			}
+		}
+	}
+	
+	if (not $Found) {
+		print STDERR "\nERROR: Atom $Label not found in seward.inp!\n";
+		exit 30;
+	}
+	else {
+		return $Coords;
+	}
+} # of sub FindAtom
+
+
+sub TransformKorData { # translates and rotates all coordinates contained in $KorData
+	my $KorData = shift;
+	my $Action  = shift;  # either t for translateion or r for rotation
+	my $Trans   = shift;  # a vector hash for a translation or an angle for a rotation
+	my $Axis    = shift;  # only given for rotations; the axis about to rotate
+	
+	my ($Group, $Atom, $AbInitGroup, $Transition, $Mono, $BalancePoint);
+	
+	foreach $Group ( @{$KorData} ) {
+		
+		foreach $Atom ( @{$Group->{Atoms}} ) {
+			&Transform ($Atom, $Action, $Trans, $Axis);
+		}
+		
+		&Transform ($Group->{XS}, $Action, $Trans, $Axis);
+		
+		if ($Group->{AbInitio}) {
+			foreach $AbInitGroup ($Group->{AbInitio})	{
+				&Transform ($AbInitGroup, $Action, $Trans, $Axis);
+			}
+		}
+		
+		foreach $Transition ( @{$Group->{Transitions}} ) {
+			&Transform ($Transition->{VM},  $Action, $Trans, $Axis);
+			&Transform ($Transition->{VMU}, $Action, $Trans, $Axis);
+			
+			&Transform ($Transition->{VMCoD},  $Action, $Trans, $Axis);
+			&Transform ($Transition->{VMUCoD}, $Action, $Trans, $Axis);
+			
+			foreach $Mono ( @{$Transition->{Monopoles}} ) {
+				&Transform ($Mono, $Action, $Trans, $Axis);
+			}
+			
+			foreach $BalancePoint ( @{$Transition->{BalancePoints}} ) {
+				&Transform ($BalancePoint, $Action, $Trans, $Axis);
+			}
+		}
+	} # of foreach $Group ( @{$KorData} )
+	
+	return 1;
+} # of TransformKorData
+
+
+sub TransformSeward { # transforms all coordinates contained in $Seward
+	my $Seward = shift;
+	my $Action  = shift;  # either t for translateion or r for rotation
+	my $Trans   = shift;  # a vector hash for a translation or an angle for a rotation
+	my $Axis    = shift;  # only given for rotations; the axis about to rotate
+	
+	
+	my ($Atom, $Charge);
+	
+	foreach $Atom ( @{$Seward->{Atoms}} ) {
+		&Transform ($Atom, $Action, $Trans, $Axis);
+	}
+	
+	foreach $Charge ( @{$Seward->{Charges}} ) {
+		if (not defined $Charge->{x} or not defined $Charge->{y} or not defined $Charge->{z}) {
+			return 0;
+		}
+		else {
+			&Transform ($Atom, $Action, $Trans, $Axis);
+		}
+	}
+	
+	return 1;
+} # of sub TransformSeward
+
+
+sub Transform { # tranlates or rotates a given vector-hash
+	my $Vector  = shift;
+	my $Action  = shift;  # either t for translateion or r for rotation
+	my $Trans   = shift;  # a vector hash for a translation or an angle for a rotation
+	my $Axis    = shift;  # only given for rotations; the axis about to rotate
+	
+	if ($Action eq "t") {
+		Translation ($Vector, $Trans);
+	}
+	elsif ($Action eq "r") {
+		Rotation ($Vector, $Trans, $Axis);
+	}
+	else {
+		print STDERR "\nERROR: Transformation $Action could not be interpreted!\n\n";
+		exit 20;
+	}
+	
+	return 1;
+} # of sub Transform
+
+
+sub AddCharges { # adds the monopoles from $KorData to $Seward
+	my $Seward     = shift;
+	my $KorData    = shift;
+	my $ThisGroup  = shift;
+	my $Transition = shift;
+	my $Balance    = shift;
+	
+	my ($Group, $Monopole, $GroupCount, $Set);
+	my ($Coulomb, $AtomicUnits);
+	
+	$GroupCount = -1;
+
+	# print "         esu            Coulomb      atomic units\n";
+	
+	foreach $Group ( @{$KorData} ) {
+		++$GroupCount;
+		
+		# only monopoles of groups other than the aligned one may be added
+		if ($GroupCount == $ThisGroup) { next }
+		
+		# if only the balance points of the charges are to be taken
+		if ($Balance) { $Set = "BalancePoints" }
+		         else { $Set = "Monopoles"     }
+
+		foreach $Monopole ( @{$Group->{Transitions}[$Transition]{$Set}} ) {
+			# "convert" the label keys which are called "Atom" in $KorData
+			$Monopole->{Label} = $Monopole->{Atom};
+			delete $Monopole->{Atom};
+			
+			$Monopole->{Unit} = $Seward->{Atoms}[0]{Unit};
+
+			# matmac charges are in [10^-10 esu] = [10^-10 Fr] = g^1/2 cm^3/2 s^-1
+			# esu = electrostatic unit, Fr = Franklin
+			# http://www.tf.uni-kiel.de/matwis/amat/mw1_ge/kap_2/basics/b2_1_14.html
+			# molcas charges are in atomic units
+
+			# first convert from esu to coulomb
+			# http://www.chemie.fu-berlin.de/chemistry/general/units_en.html
+			$Coulomb = $Monopole->{q} * 1E-10 * 3.335641E-10;
+
+			# now convert from coulomb to atomic units, e is electron charge
+			# http://folk.uio.no/michalj/node72.html#TabUn1
+			$AtomicUnits = $Coulomb / 1.6021765e-19; # * 6.241509744511525E18;
+
+			 printf "%12.6f %18e  %12.3f\n", $Monopole->{q}, $Coulomb, $AtomicUnits;
+			$Monopole->{q} = $AtomicUnits;
+			
+			push @{$Seward->{Charges}}, $Monopole;
+		}
+	}
+	
+	return 1;
+} # of sub AddCharges
+
+
+sub CreateCommandFile { # creates a gnuplot command file from the matmac data
+	my %args = @_;
+	
+	my $KorData  = $args{KorData};
+	my $AbiData  = $args{AbiData};
+	my $DbgData  = $args{DbgData};
+	my $PolData  = $args{PolData};
+	my $PdbData  = $args{PdbData};
+	my $Seward   = $args{Seward};
+	my $PlotData = $args{PlotData};
+	
+	my ($Label, $File, $i, $Position, $Offset, $PlotAtoms, $CurBaseName, $CurMono, $MonoColour);
+	my ($xO, $yO, $zO, $xXS, $yXS, $zXS, $LabelX, $LabelY, $LabelZ);
+	my ($Atom, $GroupCount, $Transition, $Index, $Extrema, $Coords, $Charge);
+	my ($CAtom, $NAtom, $OAtom, $HAtom, $XSAtom, $CHash, $NHash, $OHash, $HHash, $XSHash);
+	
+	open PLOT, ">$PlotData->{CommandFile}";
+	
+	#################################################################################################
+	# Plot the information from seward.inp
+	#################################################################################################
+	
+	if ($PlotSewardData and defined $Seward) {
+		open ATOMS, ">$PlotData->{BaseName}-seward.xyz";
+		
+		foreach $Atom ( @{$Seward->{Atoms}} ) {
+			print ATOMS "$Atom->{x}\t$Atom->{y}\t$Atom->{z}\n";
+			
+			if ($PlotData->{ShowAtomLabels}) {
+				print PLOT "set label \"$Atom->{Label}\" at  $Atom->{x}, $Atom->{y}, $Atom->{z}\n"
+			}
+		} # of foreach $Atom ( $#{$Seward->{Atoms}} )
+		 
+		if (defined $Seward->{Charges}) {
+			foreach $Charge ( @{$Seward->{Charges}} ) {
+				print ATOMS "$Charge->{x}\t$Charge->{y}\t$Charge->{z}\n";
+					
+				if ($PlotData->{ShowChargeLabel}) {
+					$Charge->{q} = sprintf "%.3f", $Charge->{q};
+					print PLOT "set label \"$Charge->{q}\" at $Charge->{x}, $Charge->{y}, $Charge->{z} offset 15,15\n"
+				}
+			} # of foreach $Charge ( $#{$Seward->{Charges}} )
+		} # of if (defined $Seward->{Charges})
+	
+		close ATOMS;
+	}
+	
+	#################################################################################################
+	
+	if ($PlotKorData and defined $KorData) {
+		open ATOMS, ">$PlotData->{BaseName}-atoms.xyz";
+		
+		##############################################################################################
+		# Plot the atoms and bonds
+		##############################################################################################
+		
+		$Extrema = { MinX =>  1E20, MinY =>  1E20, MinZ =>  1E20,
+		             MaxX => -1E20, MaxY => -1E20, MaxZ => -1E20 };
+		
+		for $GroupCount (0 .. $#{$KorData}) { # for all chromophoric groups
+			
+			for $Atom (0 .. $#{$KorData->[$GroupCount]{Atoms}} ) { # for all atoms in a particular group
+				if ( ($PlotData->{ShowGroups} != -1) and ($GroupCount !~ m/[$PlotData->{ShowGroups}]/) ) {
+					last;
+				}
+				
+				if ($PlotData->{ShowAtoms}) {
+					$Coords = &GetXYZ ($KorData->[$GroupCount]{Atoms}[$Atom], $Extrema);
+				}
+				else {
+					$Coords = &GetXYZ ($KorData->[$GroupCount]{Atoms}[$Atom])
+				}
+				
+				$PlotAtoms = 1;
+				
+				if		($Atom == 0) {
+					$Label = "C$GroupCount";
+					$Position = "right";
+					$Offset = "offset " . $PlotData->{LabelPosition} * 2.5 . ", $PlotData->{LabelPosition}";
+					# save the C atom coordinates as string for the drawing of the bond
+					$CAtom = "$Coords->{x}, $Coords->{y}, $Coords->{z}";
+					$CHash = $KorData->[$GroupCount]{Atoms}[$Atom]; 
+				}
+				elsif ($Atom == 1) {
+					$Label = "O$GroupCount";
+					$Position = "left";
+					$Offset = "offset $PlotData->{LabelPosition}, $PlotData->{LabelPosition}";
+					# save the O atom coordinates as string for the drawing of the bond
+					$OAtom = "$Coords->{x}, $Coords->{y}, $Coords->{z}";
+					$OHash = $KorData->[$GroupCount]{Atoms}[$Atom];
+					$xO = $Coords->{x};
+					$yO = $Coords->{y};
+					$zO = $Coords->{z};
+				}
+				elsif ($Atom == 2) {
+					$Label = "N$GroupCount";
+					$Position = "right";
+					$Offset = "offset -$PlotData->{LabelPosition}, $PlotData->{LabelPosition}";
+					# save the N atom coordinates as string for the drawing of the bond
+					$NAtom = "$Coords->{x}, $Coords->{y}, $Coords->{z}";
+					$NHash = $KorData->[$GroupCount]{Atoms}[$Atom];
+				}
+				elsif ($Atom == 3) {
+					$Label = "H$GroupCount";
+					$Position = "right";
+					$Offset = "offset -$PlotData->{LabelPosition}, $PlotData->{LabelPosition}";
+					# save the H atom coordinates as string for the drawing of the bond
+					$HAtom = "$Coords->{x}, $Coords->{y}, $Coords->{z}";
+					$HHash = $KorData->[$GroupCount]{Atoms}[$Atom];
+					if (not $PlotData->{ShowHydrogen}) { next }
+				}
+				
+				if ($PlotData->{ShowAtoms}) {
+					print ATOMS "$Coords->{x}\t$Coords->{y}\t$Coords->{z}\n";
+				}
+				
+				if ($PlotData->{ShowAtomLabels}) {
+					print PLOT "set label \"$Label\" at  $Coords->{x}, $Coords->{y}, $Coords->{z} ",
+								"$Position point lt 1 pt 1 $Offset \n";
+				}
+			} # of for $Atom (0 .. $#{$KorData->[$GroupCount]{Atoms}})
+			
+			if ($PlotData->{ShowBonds}) {
+				if ( ($PlotData->{ShowGroups} == -1) or ($GroupCount =~ m/[$PlotData->{ShowGroups}]/) ) {
+					if ($PlotData->{ShowHydrogen} and $HAtom) { print PLOT "set arrow from $NAtom to $HAtom nohead lt 7 lw 3\n" } # draw the bond line from N to H
+					# draw the bond line from N to C
+					print PLOT "set arrow from $NAtom to $CAtom nohead lt 7 lw 3\n";
+					# draw the bond line from C to O
+					print PLOT "set arrow from $CAtom to $OAtom nohead lt 7 lw 3\n";
+				}
+			}
+			
+			$XSHash = $KorData->[$GroupCount]{XS};
+			$Coords = &GetXYZ ($XSHash);
+			$XSAtom = "$Coords->{x}, $Coords->{y}, $Coords->{z}";
+			$xXS = $Coords->{x};
+			$yXS = $Coords->{y};
+			$zXS = $Coords->{z};
+			
+			
+			###########################################################################################
+			# Plot the monopoles, dipole centres and balance points
+			###########################################################################################
+			
+			if ($PlotData->{ShowMonopoles} or $PlotData->{ShowChargeLabel}) {
+				for $Transition (0 .. $#{$KorData->[$GroupCount]{Transitions}} ) {
+					
+					if ( ($PlotData->{ShowTransitions} == -1) or ($Transition =~ m/[$PlotData->{ShowTransitions}]/) ) {
+						open Trans, ">$PlotData->{BaseName}-trans-$GroupCount-$Transition.xyz";
+						push @{$PlotData->{TransFiles}}, "$PlotData->{BaseName}-trans-$GroupCount-$Transition.xyz";
+						
+						foreach $CurMono (@{$KorData->[$GroupCount]{Transitions}[$Transition]{Monopoles}}) {
+							$Coords = &GetXYZ ($CurMono, $Extrema);
+							if ($Coords->{z}< 0) { next }
+							
+							if ($PlotData->{ShowMonopoles}) {
+								if ($CurMono->{q} == 0) { $MonoColour = -1 } # colour black
+								if ($CurMono->{q} >  0) { $MonoColour =  1 } # colour blue
+								if ($CurMono->{q} <  0) { $MonoColour =  3 } # colour red
+								
+								print PLOT "set label \"\" at $Coords->{x}, $Coords->{y}, $Coords->{z} ",
+								           "point lt $MonoColour pt 7\n";
+							}
+							
+							if ($PlotData->{ShowChargeLabel}) {
+								$Offset = 0.00;
+								
+								$LabelX = $Coords->{x};
+								$LabelY = $Coords->{y};
+								$LabelZ = $Coords->{z};
+								
+								$Label = $CurMono->{q};
+								
+								if    ($CurMono->{Atom} =~ m/^C/) { $MonoColour = 5 }
+								elsif ($CurMono->{Atom} =~ m/^N/) { $MonoColour = 4 }
+								elsif ($CurMono->{Atom} =~ m/^O/) { $MonoColour = 3 }
+								elsif ($CurMono->{Atom} =~ m/^H/) { $MonoColour = 2 }
+								
+								if ($PlotData->{RoundCharges}) { $Label = sprintf ("%8.2f", $Label) }
+	#							$Offset =  "offset -" . $Coords->{x} * $PlotData->{LabelPosition} * 5 . ", " . $Coords->{y} * $PlotData->{LabelPosition};
+								$Offset =  "";
+								print PLOT "set label \"$Label\" at $LabelX, $LabelY, $LabelZ $Position ",
+								           "font \"Helvetica, 9\" front textcolour lt $PlotData->{MonoColour} ",
+								           "point lt 0 pt 0 $Offset\n";
+	#							print PLOT "set arrow from $Coords->{x}, $Coords->{y}, $Coords->{z}to $LabelX, $LabelY, $LabelZ nohead lt 6 lw 1\n";
+							}
+							
+						}
+						
+						close Trans;
+					}
+				} # of for $Transition (0 .. $#{$KorData->[$GroupCount]{Transitions}} )
+			} # of if ($PlotData->{ShowMonopoles})
+		} # of for $GroupCount (0 .. $#{$KorData})
+		
+		close ATOMS;
+		
+		&CleanExtrema ($Extrema);
+	} # of if ($PlotKorData and defined $KorData) {
+	
+	
+	#################################################################################################
+	# Set all the plot-specific stuff for gnuplot
+	#################################################################################################
+	
+	if (not $PlotData->{KeepGnuplotAlive}) {
+		print PLOT "set encoding iso_8859_1\n";
+		print PLOT "set terminal postscript enhanced colour solid\n";
+		print PLOT "set output \"$PlotData->{OutFile}\"\n";  # specify the output file
+	}
+	
+	print PLOT "set zeroaxis ls 7\n";
+	
+	if ($PlotData->{xTics}) {
+		print PLOT "set xtics border nomirror norotate $PlotData->{xTics}\n";
+		print PLOT "set mxtics 2\n";
+	}
+	else {
+#		print PLOT "set xtics border nomirror norotate ", ($Extrema->{MaxX} - $Extrema->{MinX})/5, "\n";
+		print PLOT "set xtics border nomirror norotate\n";
+		print PLOT "set mxtics 2\n";
+	}
+	
+	if ($PlotData->{yTics}) {
+		print PLOT "set ytics border nomirror norotate $PlotData->{yTics}\n";
+		print PLOT "set mytics 2\n";
+	}
+	else {
+#		print PLOT "set ytics border nomirror norotate ", ($Extrema->{MaxY} - $Extrema->{MinY})/5, "\n";
+		print PLOT "set ytics border nomirror norotate\n";
+		print PLOT "set mytics 2\n";
+	}
+	
+	if (defined $PlotData->{Title}) {
+		print PLOT "set title \"$PlotData->{Title}\"\n";
+	}
+	
+	print PLOT "set xlabel \"x / \305\"\n";
+	print PLOT "set ylabel \"y / \305\"\n";
+	
+	if ($PlotData->{ZAxisLabels}) {
+		if ($PlotData->{zTics}) {
+			print PLOT "set ztics border nomirror norotate $PlotData->{zTics}\n";
+			print PLOT "set mztics 2\n";
+		}
+		else {
+			print PLOT "set ztics border nomirror norotate ", ($Extrema->{MaxZ} - $Extrema->{MinZ})/10, "\n";
+			print PLOT "set mztics 2\n";
+		}
+		
+		print PLOT "set zlabel \"z / \305\"\n";
+	}
+	else {
+		print PLOT "set noztics\n"
+	}
+	
+	print PLOT "\n";
+	print PLOT "set ticslevel 0\n";
+	
+	if ($PlotData->{Square}) { print PLOT "set size square $PlotData->{Size}\n" }
+	                    else { print PLOT "set size $PlotData->{Size}\n"        }
+	
+	if ($PlotData->{Title}) {
+		print PLOT "set title \"$PlotData->{BaseName} - $PlotData->{Title}\"\n";
+	}
+	else {
+		print PLOT "set title \"$PlotData->{BaseName}\"\n";
+	}
+	
+	print PLOT "set view $PlotData->{View}\n";
+	print PLOT "set grid\n";  # show a grid (dotted lines at every major tic)
+	
+	if ($PlotData->{ShowKey}) {  # show the legend
+		print PLOT "set key right top Left reverse samplen 2 spacing 1.25 title \"\" nobox\n";
+	}
+	else {
+		print PLOT "set nokey\n";
+	}
+	
+	print PLOT "\n";
+	
+	
+	#################################################################################################
+	# set the ranges of the axes
+	#################################################################################################
+	
+	if ($PlotData->{GlobalMaximum}) {
+		if    ( ($Extrema->{MaxX} > $Extrema->{MaxY}) and ($Extrema->{MaxX} > $Extrema->{MaxZ}) ) {
+			$Extrema->{MaxY} = $Extrema->{MaxX};
+			$Extrema->{MaxZ} = $Extrema->{MaxX};
+		}
+		elsif ( ($Extrema->{MaxY} > $Extrema->{MaxX}) and ($Extrema->{MaxY} > $Extrema->{MaxZ}) ) {
+			$Extrema->{MaxX} = $Extrema->{MaxY};
+			$Extrema->{MaxZ} = $Extrema->{MaxY};
+		}
+		else {
+			$Extrema->{MaxX} = $Extrema->{MaxZ};
+			$Extrema->{MaxY} = $Extrema->{MaxZ};
+		}
+		
+		if		( ($Extrema->{MinX} < $Extrema->{MinY}) and ($Extrema->{MinX} < $Extrema->{MinZ}) ) {
+			$Extrema->{MinY} = $Extrema->{MinX};
+			$Extrema->{MinZ} = $Extrema->{MinX};
+		}
+		elsif ( ($Extrema->{MinY} < $Extrema->{MinX}) and ($Extrema->{MinY} < $Extrema->{MinZ}) ) {
+			$Extrema->{MinX} = $Extrema->{MinY};
+			$Extrema->{MinZ} = $Extrema->{MinY};
+		}
+		else {
+			$Extrema->{MinX} = $Extrema->{MinZ};
+			$Extrema->{MinY} = $Extrema->{MinZ};
+		}
+	}
+	
+	if ($PlotData->{XRange}) {
+		if ($PlotData->{XRange} =~ m/:/) {
+			print PLOT "set xrange [$PlotData->{XRange}]\n";
+		}
+		else {
+			print PLOT "set xrange [-$PlotData->{XRange}:$PlotData->{XRange}]\n";
+		}
+	}
+	else {
+		print PLOT "set xrange [" . $Extrema->{MinX} . ":" . $Extrema->{MaxX} . "]\n";
+	}
+	
+	if ($PlotData->{YRange}) {
+		if ($PlotData->{YRange} =~ m/:/) {
+			print PLOT "set yrange [$PlotData->{YRange}]\n";
+		}
+		else {
+			print PLOT "set yrange [-$PlotData->{YRange}:$PlotData->{YRange}]\n";
+		}
+	}
+	else {
+		print PLOT "set yrange [" . $Extrema->{MinY} . ":" . $Extrema->{MaxY} . "]\n";
+	}
+	
+	if ($PlotData->{ZRange}) {
+		if ($PlotData->{ZRange} =~ m/:/) {
+			print PLOT "set zrange [$PlotData->{ZRange}]\n";
+		}
+		else {
+			print PLOT "set zrange [-$PlotData->{ZRange}:$PlotData->{ZRange}]\n";
+		}
+	}
+	else {
+		print PLOT "set zrange [" . $Extrema->{MinZ} . ":" . $Extrema->{MaxZ} . "]\n";
+	}
+	
+	#################################################################################################
+	
+	print PLOT "show label\n";
+	
+	open  DUMMY, ">$PlotData->{BaseName}-dummy.xyz";
+	print DUMMY "0\t0\t0\n"; # dummy atom to avoid an error message, if only vectors should be printed (splot MUST be executed for gnuplot to be started)
+	close DUMMY;
+	
+	print PLOT "splot \"$PlotData->{BaseName}-dummy.xyz\" with points lt 0 pt 0 ";
+	
+	if ($PlotKorData and $PlotAtoms) {
+		print PLOT ", \"$PlotData->{BaseName}-atoms.xyz\" title \"atoms\" with points lt 3 pt 7";
+	}
+	
+	$i = 1;
+	foreach $File ( @{$PlotData->{TransFiles}} ) {
+		$CurBaseName = $File;
+		$CurBaseName =~ s/\.xyz//;
+		
+		print PLOT ", \"$File\" title \"$CurBaseName\" with points $i";
+		++$i;
+	}
+	
+	if ($PlotSewardData and defined $Seward) {
+		print PLOT ", \"$PlotData->{BaseName}-seward.xyz\" title \"atoms\" with points lt 2 pt 7";
+	}
+	
+	print PLOT "\n\n";
+	
+	if ($PlotData->{KeepGnuplotAlive}) { print PLOT "\npause -1\n" }
+	print PLOT "\n";
+	close PLOT;
+} # of sub CreateCommandFile
+
+
+sub GetXYZ { # sets the global xyz variables
+	my $Hash = shift;
+	my $Extrema = shift;
+	
+	my $Coords = {
+		x => $Hash->{x},
+		y => $Hash->{y},
+		z => $Hash->{z},
+	};
+	
+	if ($Extrema) {
+		if ($Coords->{x} < $Extrema->{MinX}) { $Extrema->{MinX} = $Coords->{x} }
+		if ($Coords->{x} > $Extrema->{MaxX}) { $Extrema->{MaxX} = $Coords->{x} }
+		
+		if ($Coords->{y} < $Extrema->{MinY}) { $Extrema->{MinY} = $Coords->{y} }
+		if ($Coords->{y} > $Extrema->{MaxY}) { $Extrema->{MaxY} = $Coords->{y} }
+		
+		if ($Coords->{z} < $Extrema->{MinZ}) { $Extrema->{MinZ} = $Coords->{z} }
+		if ($Coords->{z} > $Extrema->{MaxZ}) { $Extrema->{MaxZ} = $Coords->{z} }
+	}
+	
+	return $Coords;
+} # of sub GetXYZ
+
+
+sub CleanExtrema { # sets the determined extrema to integers
+	my $Extrema = shift;
+	my ($xRange, $yRange, $zRange);
+	
+	$xRange = $Extrema->{MaxX} - $Extrema->{MinX};
+	$yRange = $Extrema->{MaxY} - $Extrema->{MinY};
+	$zRange = $Extrema->{MaxZ} - $Extrema->{MinZ};
+	
+	# decrease the minimum about 10% of the range
+	$Extrema->{MinX} = $Extrema->{MinX} - ($xRange * 0.1);
+	$Extrema->{MinY} = $Extrema->{MinY} - ($yRange * 0.1);
+	$Extrema->{MinZ} = $Extrema->{MinZ} - ($zRange * 0.1);
+	
+	# increase the maximum about 10% of the range
+	$Extrema->{MaxX} = $Extrema->{MaxX} + ($xRange * 0.1);
+	$Extrema->{MaxY} = $Extrema->{MaxY} + ($yRange * 0.1);
+	$Extrema->{MaxZ} = $Extrema->{MaxZ} + ($zRange * 0.1);
+	
+	# remove the floating point part
+	foreach (keys %{$Extrema}) {
+		if (abs $Extrema->{$_} > 1) {
+			$Extrema->{$_} = int $Extrema->{$_};
+		}
+	}
+} # of sub CleanExtrema
+
+

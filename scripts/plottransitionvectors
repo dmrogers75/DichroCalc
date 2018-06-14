@@ -1,0 +1,281 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    plottransitionvectors
+#
+# Function:   Plots the atoms and transition dipole moment vectors of a parameter set
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3947 $, $Date: 2009-02-12 18:13:23 +0000 (Thu, 12 Feb 2009) $
+#
+# Date:       September 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use ReadParSet;                      # to parse matmac parameter sets
+use VectorMath;                      # for vector calculations
+use GetParameters;                   # to handle command line parameters
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {     # create an anonymous hash
+	o      => "string",
+	p      => "string",
+	f      => "string",
+	t      => "string",
+	s      => "string",
+	r      => "string",
+	labels => "switch",
+	title  => "string",
+};
+
+my $Options = {       # create an anonymous hash
+	s   => 0,
+	t   => 1,
+	p   => "NMA4FIT2",
+	f   => "$ENV{HOME}/bin/parsets.par",
+};
+
+my $Help = "\n" .
+"Usage:   plottransitionvectors -t trans [-s state] [-p parsetname] [-f inputfile]\n" .
+"                                        [-o outfile] [-title \"title\"]\n" .
+"\n" .
+"           -t        The number of transitions to show\n" .
+"           -s        The state to show, default is $Options->{s}\n" .
+"           -p        The parameter set name default is $Options->{p}\n" .
+"           -f        The file containing the parameter set\n" .
+"                     default is $Options->{f}\n" .
+"           -o        A postscript output file, where the plot is written to\n" .
+"           -r        Define a range for the axes (one for all to avoid distortions)\n" .
+"           -labels   Plot the atom labels\n" .
+"           -title    To define a title for the plot\n" .
+"\n";
+
+####################################################################################################
+
+my ($Trans, $Transitions, $Output);
+my $ParData = {};      # create an anonymous hash
+my $Data = {};         # create an anonymous array
+
+GetParameters ($Parameters, $Options, $Help);
+
+my $ParSet = $Options->{rest}[0];
+my $InFile = $Options->{f};
+
+ReadParSet ($Options->{f}, $Options->{p}, $ParData);
+
+CalculateData ($Options, $ParData, $Data);
+
+if (not defined $Options->{r}) {
+	FindExtrema ($Options, $Data);
+}
+
+CreateCommandFile ($Options, $Data);
+
+####################################################################################################
+# SUBROUTINES
+####################################################################################################
+
+sub CalculateData { # 'collects' requested vectors, calculates angles, energies and moments
+	my $Options = shift;
+	my $ParData = shift;
+	my $Data    = shift;
+	
+	my ($Trans);
+	
+	# copy (well, rather 'reference') the atoms into the data hash
+	$Data->{Atoms} = $ParData->{Atoms};
+	
+	for $Trans ( 0 .. $Options->{t}-1 ) {
+		my $CurTrans = {};
+		
+		$CurTrans->{VMU} = $ParData->{Trans}[$Options->{s}][$Trans]{VMU};
+		$CurTrans->{Ewn} = $ParData->{Trans}[$Options->{s}][$Trans]{Ewn};
+		$CurTrans->{Enm} = $ParData->{Trans}[$Options->{s}][$Trans]{Enm};
+		
+		$CurTrans->{Angle} = Angle ( { x=>0, y=>1, z=>0}, $CurTrans->{VMU} );
+		$CurTrans->{Moment} = CalculateMoment ($ParData->{Trans}[$Options->{s}][$Trans]{Monopoles});
+		push @{$Data->{Trans}}, $CurTrans;
+	}
+} # of sub CalculateData
+
+
+sub CalculateMoment { # determines the dipole moment from the monopole set
+	my $MonopoleSet = shift;
+	my ($Monopole, $Moment, $Distance);
+	
+	$Moment = 0;
+	my $CentrePos = {x => 0, y => 0, z => 0, q => 0, Counter => 0};
+	my $CentreNeg = {x => 0, y => 0, z => 0, q => 0, Counter => 0};
+	
+	foreach $Monopole ( @{$MonopoleSet} ) {
+		# convert the units angstrom to cm
+		$Monopole->{x} = $Monopole->{x} * 1E-8;
+		$Monopole->{y} = $Monopole->{y} * 1E-8;
+		$Monopole->{z} = $Monopole->{z} * 1E-8;
+		
+		# the charges in the monopole file are in 10^-10 esu
+		$Monopole->{q} = $Monopole->{q} * 1E-10;
+		
+		$Monopole->{x} = $Monopole->{x} * $Monopole->{q};
+		$Monopole->{y} = $Monopole->{y} * $Monopole->{q};
+		$Monopole->{z} = $Monopole->{z} * $Monopole->{q};
+		
+		if ($Monopole->{q} >= 0) {
+			# add up all positive coordinates and charges
+			$CentrePos->{x} = $CentrePos->{x} + $Monopole->{x};
+			$CentrePos->{y} = $CentrePos->{y} + $Monopole->{y};
+			$CentrePos->{z} = $CentrePos->{z} + $Monopole->{z};
+			$CentrePos->{q} = $CentrePos->{q} + $Monopole->{q};
+		}
+		else {
+			# add up all negative coordinates and charges
+			$CentreNeg->{x} = $CentreNeg->{x} + $Monopole->{x};
+			$CentreNeg->{y} = $CentreNeg->{y} + $Monopole->{y};
+			$CentreNeg->{z} = $CentreNeg->{z} + $Monopole->{z};
+			$CentreNeg->{q} = $CentreNeg->{q} + $Monopole->{q};
+		}
+	}
+	
+	foreach ( qw/x y z/) {
+		# divide each coordinate by the charge (negative or positive respectively)
+		$CentrePos->{$_} = $CentrePos->{$_} / $CentrePos->{q};
+		$CentreNeg->{$_} = $CentreNeg->{$_} / $CentreNeg->{q};
+	}
+	
+	$Distance = sqrt ( ($CentreNeg->{x} - $CentrePos->{x})**2 +
+	                   ($CentreNeg->{y} - $CentrePos->{y})**2 +
+	                   ($CentreNeg->{z} - $CentrePos->{z})**2 );
+	
+	# the moment is calculated in esu*cm and divided by 1E-18 to convert to Debye
+	$Moment = $Distance * $CentrePos->{q} / 1E-18;
+	
+	return $Moment;
+} # of sub CalculateMoment
+
+
+sub FindExtrema { # determines the range
+	my $Options = shift;
+	my $Data = shift;
+	
+	my ($Point, $Trans);
+		
+	$Options->{r} = 0;
+	
+	foreach $Point ( @{$Data->{Atoms}} ) {
+		foreach ( qw/x y z/ ) {
+			if ( abs $Point->{$_} > $Options->{r} ) { $Options->{r} = $Point->{$_} }
+		}
+	}
+	
+	foreach $Trans ( @{$Data->{Trans}} ) {
+		$Point = $Trans->{VMU};
+		
+		foreach ( qw/x y z/ ) {
+			if ( abs $Point->{$_} > $Options->{r} ) { $Options->{r} = $Point->{$_} }
+		}
+	}
+	
+	$Options->{r} = int ($Options->{r} + 1);
+} # of sub FindExtrema
+
+
+sub CreateCommandFile { # created the gnuplot command file and runs it
+	my $Options = shift;
+	my $Data = shift;
+	
+	my ($CommandFile, $Point, $Trans, $Label);
+	
+	$CommandFile = $Options->{p} . ".cmd";
+	
+	open  PLOT, ">$CommandFile";
+	print PLOT "set encoding iso_8859_1\n";
+	
+	if (defined $Options->{o}) {
+		print PLOT "set terminal postscript enhanced colour solid\n";
+		print PLOT "set output \"$Options->{o}\"\n\n";
+	}
+	
+	if (defined $Options->{title}) {
+		print PLOT "set title \"$Options->{title}\"\n";
+	}
+	
+	print PLOT "\n";
+	print PLOT "set xlabel \"x\"\n";
+	print PLOT "set ylabel \"y\"\n";
+	print PLOT "set zlabel \"z\"\n";
+	
+	print PLOT "\n";
+	print PLOT "set xrange [-$Options->{r}:$Options->{r}]\n";
+	print PLOT "set yrange [-$Options->{r}:$Options->{r}]\n";
+	print PLOT "set zrange [-$Options->{r}:$Options->{r}]\n";
+
+	print PLOT "set noztics\n";
+	
+	print PLOT "\n";
+	print PLOT "set size square\n";
+	print PLOT "set view 0,0\n";
+	print PLOT "\n";
+	
+	# plot the transition dipole moments
+	foreach $Trans ( @{$Data->{Trans}} ) {
+		$Point = $Trans->{VMU};
+		
+		print  PLOT "set arrow from 0, 0, 0 to $Point->{x}, $Point->{y}, $Point->{z} " .
+		            "filled lt 1 lc rgb \"blue\" lw 1\n";
+		
+		printf PLOT "set label \"%.1f deg %.1f nm %.1f D\" " .
+		            " at $Point->{x}, $Point->{y}, $Point->{z} left textcolour lt 1 point lt 0 pt 0\n",
+		            $Trans->{Angle}, $Trans->{Enm}, $Trans->{Moment};
+	}
+	
+	if ($Options->{labels}) {
+		foreach $Point ( @{$Data->{Atoms}} ) {
+			$Label = $Point->{Comment};
+			$Label =~ s/^[\s#]+//g; # remove leading blanks and hash symbols
+			print PLOT "set label \"$Label\" at  $Point->{x}, $Point->{y}, $Point->{z} point lt 1 pt 1 offset 1.5 \n"
+		}
+	}
+
+	# plot the atoms from the monopole set
+	print PLOT "splot '-' notitle\n";
+	
+	foreach $Point ( @{$Data->{Atoms}} ) {
+		print PLOT "$Point->{x}   $Point->{y}   $Point->{z}\n";
+	}
+	
+	print PLOT "e\n\n";
+	
+	
+	
+	if (not defined $Options->{o}) {
+		print PLOT "\npause -1\n";
+	}
+	
+	close PLOT;
+	
+	###############################################################################
+	# print the file
+	###############################################################################
+	
+	my @Output = `gnuplot $CommandFile 2>&1`;
+	
+	# discard leading empty lines of the @Output
+	while (@Output and $Output[0] eq "\n") { shift @Output }
+	
+	# only print the gnuplot output if there actually is something to output (this omits the two empty 
+	# lines which are usually printed and mess up the output of scripts plotting hundreds of spectra)
+	if (@Output) { print join "", @Output }
+}
+
+

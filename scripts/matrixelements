@@ -1,0 +1,264 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    matrixelements
+#
+# Function:   Reads a matmac Hamiltonian matrix and lists the interactions
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 4637 $, $Date: 2009-07-16 00:32:49 +0100 (Thu, 16 Jul 2009) $
+#
+# Date:       July 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use ReadMatmac;                      # to read matmac in- and output files
+use GetParameters;                   # to handle command line parameters
+use Term::ANSIColor qw(:constants);
+
+# reset the colour after each print statement
+# $Term::ANSIColor::AUTORESET = 1;
+
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {     # create an anonymous hash
+	d     => "string",
+	t     => "string",
+	bb    => "switch",
+	ct    => "switch",
+	sc    => "switch",
+	bbbb  => "switch",
+	ctct  => "switch",
+	scsc  => "switch",
+};
+
+my $Options = {       # create an anonymous hash
+	d  =>  0,
+	t  =>  0,
+};
+
+my $Help = "\n" .
+"Usage:   matrixelements basename [-d x] [-t x] [options]\n" .
+"\n" .
+"      -d x    consider only residues of distance x from each other (default $Options->{d})\n" .
+"      -t x    threshold, when to regard a value as big enough to list it (default $Options->{t})\n" .
+"\n" .
+"      -bb     only interactions including at least one backbone group\n" .
+"      -ct     only interactions including at least one charge-transfer group\n" .
+"      -sc     only interactions including at least one side chain group\n" .
+"\n" .
+"      -bbbb   backbone-backbone interaction only\n" .
+"      -ctct   CT-CT interaction only\n" .
+"      -scsc   side chain - side chain interaction only\n" .
+"\n" .
+"basename.stf, .mat, .stf.pdb and .fmt must be in the current directory.\n" .
+"\n";
+
+####################################################################################################
+
+my ($Row, $Column, $ResDistance, $Distance, $OK, $LineCounter);
+my ($Group1, $CurAtoms1, $CurPos1, $CurType1, $CurTransNo1, $Trans1, $Residues1, $ChromType1);
+my ($Group2, $CurAtoms2, $CurPos2, $CurType2, $CurTransNo2, $Trans2, $Residues2, $ChromType2);
+
+GetParameters ($Parameters, $Options, $Help);
+
+if (not $Options->{rest}) {
+	print STDERR "\nERROR: No file name given!\n\n";
+	exit 1;
+}
+
+my $BaseName = shift @{$Options->{rest}};
+my $StfData = {}; # create an anonymous hash
+my $MatData = {}; # create an anonymous hash
+my $PdbData = []; # create an anonymous array
+my $FmtData = []; # create an anonymous array
+
+if (scalar @{$Options->{rest}} > 1) {
+	print STDERR "\nERROR: Only one file can be processed! Unrecognized commands:\n";
+	print STDERR join "\n", @{$Options->{rest}};
+	exit 2;
+}
+
+if (not -f "$BaseName.mat") {
+	$BaseName =~ s/\.(stf|pdb|mat|kor|bil|out)$//;
+}
+
+foreach ( qw/stf mat fmt stf.pdb/ ) {
+	if (not -f "$BaseName.$_") {
+		print STDERR "\nERROR: $BaseName.$_ not found in current directory!\n\n";
+		exit 3;
+	}
+}
+
+ReadStfFile ($BaseName, $StfData);
+ReadFmtFile ($BaseName, $FmtData);
+ReadMatFile ($BaseName, $MatData);
+
+# read the pdb file which has been renumbered by dcinput
+open FILE, "<$BaseName.stf.pdb" or die "ERROR: $BaseName.stf.pdb not found! $!";
+@{$PdbData} = <FILE>;
+close FILE;
+
+# filter out all lines starting with ATOM (removes e.g. TER)
+# now the array indeces (-1) match the assignment numbers in the stf file
+@{$PdbData} = grep /^ATOM/, @{$PdbData};
+
+if (scalar @{$PdbData} != $StfData->{AtomNumber}) {
+	print STDERR "\nERROR: The number of atoms in the stf file (", $StfData->{AtomNumber}, ") does not match\n";
+	print STDERR "the number of ATOM lines in the .stf.pdb file (", scalar @{$PdbData}, ")!\n\n";
+	exit 10;
+}
+
+print UNDERLINE;
+print WHITE "             Group 1  ";
+print GREEN "Trans";
+print WHITE " +               Group 2  ";
+print GREEN "Trans";
+print WHITE "       V      ";
+print GREEN "ResDis";
+print WHITE " Distance\n";
+print RESET;
+
+$Row = 0;
+$LineCounter = 0;
+
+# We work our way down the matrix (it is symmetric anyway, so down or right matters
+# a faint fuck).
+# Perl accesses "matrices" like $array->[row][column]. In this case, $Group1 is $Row, $Group2 is $Column.
+for $Group1 ( 0 .. $StfData->{Groups}-1 ) {
+	$Column = 0;
+
+	$CurAtoms1   = $StfData->{Assignments}[$Group1];
+	$CurPos1     = $FmtData->[$CurAtoms1->[0]];
+	$CurType1    = $StfData->{Types}[$Group1];
+	$CurTransNo1 = $StfData->{Transitions}[$CurType1-1];
+	$Residues1   = &GetResidues ($PdbData, $CurAtoms1);
+
+	if    (scalar @{$Residues1} == 2) { $ChromType1 = "sc" }
+	elsif (scalar @{$Residues1} == 4) { $ChromType1 = "bb" }
+	elsif (scalar @{$Residues1} == 6) { $ChromType1 = "ct" }
+
+	# dp ($CurAtoms1, $CurType1, $CurTransNo1, $Residues1);
+
+	for $Trans1 ( 0 .. $CurTransNo1-1 ) {
+
+		# for $Group2 ( 0 .. $Group1 ) {
+		for $Group2 ( 0 .. $StfData->{Groups}-1 ) {
+			$CurAtoms2   = $StfData->{Assignments}[$Group2];
+			$CurPos2     = $FmtData->[$CurAtoms2->[0]];
+			$CurType2    = $StfData->{Types}[$Group2];
+			$CurTransNo2 = $StfData->{Transitions}[$CurType2-1];
+			$Residues2   = &GetResidues ($PdbData, $CurAtoms2);
+
+			if    (scalar @{$Residues2} == 2) { $ChromType2 = "sc" }
+			elsif (scalar @{$Residues2} == 4) { $ChromType2 = "bb" }
+			elsif (scalar @{$Residues2} == 6) { $ChromType2 = "ct" }
+
+			# dp ($CurAtoms2, $CurType2, $CurTransNo2, $Residues2);
+
+			$ResDistance = $Group1 - $Group2;
+			
+			$Distance = sqrt ( ($CurPos1->[0] - $CurPos2->[0])**2 +
+			                   ($CurPos1->[1] - $CurPos2->[1])**2 +
+									 ($CurPos1->[2] - $CurPos2->[2])**2  );
+			
+			for $Trans2 ( 0 .. $CurTransNo2-1 ) {
+				# Test whether the entry shall be printed. Only if $OK remains true, it is printed out.
+				$OK = 1;
+				
+				# check if the distance is bigger or equal as the requested value
+				if ($ResDistance < $Options->{d}) { $OK = 0 }
+
+				# print only lower half (under diagonal) of the matrix
+				if ($Row < $Column) { $OK = 0 }
+
+				# check is abolute interaction is bigger than the threshold
+				if (abs($MatData->{Matrix}[$Row][$Column]) < $Options->{t}) { $OK = 0 }
+				
+				# check whether only particular interactions were requested
+				if ($Options->{bb} and ($ChromType1 ne "bb" and $ChromType2 ne "bb")) { $OK = 0 }
+				if ($Options->{ct} and ($ChromType1 ne "ct" and $ChromType2 ne "ct")) { $OK = 0 }
+				if ($Options->{sc} and ($ChromType1 ne "sc" and $ChromType2 ne "sc")) { $OK = 0 }
+
+				if ($Options->{bbbb} and ($ChromType1 ne "bb" or $ChromType2 ne "bb")) { $OK = 0 }
+				if ($Options->{ctct} and ($ChromType1 ne "ct" or $ChromType2 ne "ct")) { $OK = 0 }
+				if ($Options->{scsc} and ($ChromType1 ne "sc" or $ChromType2 ne "sc")) { $OK = 0 }
+
+				if ($OK) {
+					# printf "%20s %5d  +  %20s %5d   %12.3f %6d %8.1f A\n",
+					#	join (" ", @{$Residues1}), $Trans1 + 1,
+					#	join (" ", @{$Residues2}), $Trans2 + 1,
+					#	$MatData->{Matrix}[$Row][$Column],
+					#	$ResDistance, $Distance;
+					
+					++$LineCounter;
+
+					if ($LineCounter >= 5) {
+						print UNDERLINE;
+						$LineCounter = 0;
+					}
+
+					print WHITE;  printf "%20s",      join (" ", @{$Residues1});
+					print GREEN;  printf "%5d",       $Trans1 + 1;
+					print WHITE;  printf "   +  ";
+					print WHITE;  printf "%20s",      join (" ", @{$Residues2});
+					print GREEN;  printf "%5d",       $Trans2 + 1;
+					print WHITE;  printf " %12.3f",   $MatData->{Matrix}[$Row][$Column];
+					print GREEN;  printf "%7d",       $ResDistance;
+					print WHITE;  printf "%8.1f A", $Distance;
+
+					print RESET "\n";
+				}
+
+				++$Column;
+			} # of for $Trans2
+		} # of for $Group2
+		
+		$Column = 0;
+		++$Row;
+	} # of for $Trans1
+
+} # of for $Group1
+
+print "\n\n";
+
+sub GetResidues { # returns the residue labels and number of all residues in the chromophoric group
+	my $PDB   = shift;
+	my $Atoms = shift;
+
+	my ($Atom, $LastResidueNumber, $CurResidueNumber, $CurResidueLabel);
+	my $Residues = []; # create an anonymous array
+
+	$LastResidueNumber = -1;
+
+	# $Atoms is an array with the atom assignment from the stf file for a chromophoric group.
+	# Each number minus one (Perl starts counting at zero) refers to the atom line in the 
+	# $PDB array.
+	foreach $Atom ( @{$Atoms} ) {
+		$CurResidueNumber = substr $PDB->[$Atom-1], 22, 4;
+		$CurResidueNumber =~ s/\s//g;
+
+		# check, whether the residuenumber has changed
+		if ($CurResidueNumber != $LastResidueNumber) {
+			$CurResidueLabel  = substr $PDB->[$Atom-1], 17, 3;
+
+			push @{$Residues}, $CurResidueLabel;
+			push @{$Residues}, $CurResidueNumber;
+
+			$LastResidueNumber = $CurResidueNumber;
+		}
+	}
+
+	return $Residues;
+} # of sub GetResidues

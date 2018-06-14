@@ -1,0 +1,221 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    structureratio
+#
+# Function:   Calculates the ratio of secondary structure elements from a dssp output
+#
+# Required:   dsspcmbi if a PDB is processed
+#
+# Autor:      Benjamin Bulheller
+#
+# Version:    $Revision: 3896 $, $Date: 2009-02-11 18:31:08 +0000 (Wed, 11 Feb 2009) $
+#
+# Date:       December 2006
+#
+####################################################################################################
+
+use strict;                         # always use this!!!
+use lib "$ENV{HOME}/bin/perllib";   # add ~/bin/perllib to the library path
+use Data::Dumper;                   # for easy printout of arrays and hashes
+use GetBaseName;                    # to split a filename into base name and extension
+use DebugPrint;                     # handy during debugging
+
+
+####################################################################################################
+# Configuration variables
+####################################################################################################
+
+my $Format    = "%8.3f";             # sprintf format for floating point numbers
+
+####################################################################################################
+
+my (@Files, $File);
+
+if (scalar @ARGV < 1) {
+	print STDERR "\n";
+	print STDERR "Usage:   structureratio file1 [file2] [...]\n";
+	print STDERR "\n";
+	print STDERR "If a PDB file is given, dsspcmbi is used to generate the dssp data\n";
+	print STDERR "\n";
+	exit 1;
+}
+
+foreach $File ( @ARGV ) {
+	if (not -f $File) {
+		if (-f "$File.dssp") {
+			push @Files, "$File.dssp";
+		}
+		elsif (-f "$File.pdb") {
+			push @Files, "$File.pdb";
+		}
+		else {
+			print STDERR "\nERROR: File $File not found!\n\n";
+			exit 2;
+		}
+	}
+	else {
+		push @Files, $File;
+	}
+}
+
+&DsspCodes;
+
+print "            H        G        E        T        B        S        I    Unordered\n";
+
+foreach $File (@Files) {
+	&GetDsspInfo ($File);
+}
+
+print "\n";
+exit 0;
+
+
+####################################################################################################
+####################################################################################################
+# Subroutines
+####################################################################################################
+####################################################################################################
+
+
+sub GetDsspInfo { # runs dsspcmbi and extracts information from the output
+	my $File = shift;
+	
+	my (@DsspOutput, @Fields, $OldResidueNumber, $ResidueNumber, $i, $Value);
+	my ($Return, $BaseName, $Extension, $FileInfo);
+	
+	($BaseName, $Extension) = SplitFileName ($File);
+	
+	if ($Extension eq "pdb") {
+		$Return = system ("dsspcmbi > /dev/null");
+		if ($Return < 0) {
+			print STDERR "\nERROR: dsspcmbi not found in PATH!\n\n";
+			exit 3;
+		}
+		
+		open STDERR, ">/dev/null"; # discard error messages of dsspcmbi
+		@DsspOutput = `dsspcmbi $File`;
+		open STDERR, ">&STDOUT";   # redirect STDERR again to STDOUT
+		
+		if (not @DsspOutput) { # if the line has not been found
+			print "\nA problem occurred using dsspcmbi, no output was produced!\n";
+			exit 4;
+		}
+	}
+	else {
+		open FILE, "<$File";
+		@DsspOutput = <FILE>;
+		close FILE;
+		
+		if (not @DsspOutput) { # if the line has not been found
+			print "\nThere is no output in $File!\n";
+			exit 5;
+		}
+	}
+	
+	chomp @DsspOutput;
+	
+	# find the line containing the number of residues in the dssp file
+	$i = 0;
+	until ($DsspOutput[$i] =~ m/TOTAL NUMBER OF RESIDUES/) { ++$i }
+	
+	$DsspOutput[$i] =~ s/^\s+//g;    # remove leading blanks
+	@Fields = split /\s+/, $DsspOutput[$i]; # @ShellOutput still holds the dssp info, now take the $ith line and read the blank-divided columns
+	
+	$FileInfo->{DsspResidues}  = $Fields[0];
+	$FileInfo->{DsspChains}    = $Fields[1];
+	$FileInfo->{SSBridgeTotal} = $Fields[2];
+	$FileInfo->{SSBridgeIntra} = $Fields[3];
+	$FileInfo->{SSBridgeInter} = $Fields[4];
+	
+	# remove all lines until "  #  RESIDUE" appears
+	while ( @DsspOutput and ($DsspOutput[0] !~ m/^  #  RESIDUE/) ) { shift @DsspOutput }
+	
+	if (not @DsspOutput) { # if the line has not been found
+		print "\nA problem occurred using dsspcmbi: '  #  RESIDUE' not found!\n";
+		exit 6;
+	}
+	
+	shift @DsspOutput;  # remove the first line with "  #  RESIDUE"
+	
+	$OldResidueNumber = -1;
+	
+	foreach $Value ("G", "H", "I", "T", "E", "B", "S") {
+		$FileInfo->{StrucAmount}{$Value} = 0;
+	}
+	
+	for $i (0 .. $#DsspOutput) {
+		$ResidueNumber = substr ($DsspOutput[$i], 5, 6);
+		$ResidueNumber =~ s/\s+//g; # remove all blanks
+		
+		# sometimes XRay structures include different positions of some groups, they will have the same
+		# ResidueNumber but different angles Phi and Psi
+		if ($ResidueNumber eq $OldResidueNumber) {
+			next;
+		}
+		
+		$FileInfo->{DsspResidueNumber}[$i] = $ResidueNumber;
+		
+		$Value = substr ($DsspOutput[$i], 13, 2);
+		$Value =~ s/\s+//g; # remove all blanks
+		push @{$FileInfo->{DsspAminoAcid}}, $Value;
+		
+		$Value = substr ($DsspOutput[$i], 16, 1);
+		push @{$FileInfo->{StrucType}}, $Value;
+		
+		if ($Value ne " ") { ++$FileInfo->{StrucAmount}{$Value} }
+		
+		$Value = substr ($DsspOutput[$i], 103, 6);
+		$Value =~ s/\s+//g; # remove all blanks
+		push @{$FileInfo->{DsspPhi}}, $Value;
+		
+		$Value = substr ($DsspOutput[$i], 109, 6);
+		$Value =~ s/\s+//g; # remove all blanks
+		push @{$FileInfo->{DsspPsi}}, $Value;
+	} # of for $i (0 .. $#DsspOutput)
+	
+	foreach $Value ("G", "H", "I", "T", "E", "B", "S") {
+		# this catches 0 and not defined numbers
+		if (not $FileInfo->{DsspResidues}) {
+			print STDERR "\nERROR: DSSP residues ($FileInfo->{DsspResidues}) is zero or not defined.\n\n";
+			exit 140;
+		}
+		else {
+			$FileInfo->{StrucRatio}{$Value} = $FileInfo->{StrucAmount}{$Value} / $FileInfo->{DsspResidues};
+		}
+	}
+	
+	$FileInfo->{StrucRatio}{Rest} = 1 -
+	  ($FileInfo->{StrucRatio}{H} +
+		$FileInfo->{StrucRatio}{G} +
+		$FileInfo->{StrucRatio}{E} +
+		$FileInfo->{StrucRatio}{T} +
+		$FileInfo->{StrucRatio}{B} +
+		$FileInfo->{StrucRatio}{S} +
+		$FileInfo->{StrucRatio}{I} );
+	
+	printf "%6s $Format $Format $Format $Format $Format $Format $Format $Format\n",
+		$BaseName,
+		$FileInfo->{StrucRatio}{H},
+		$FileInfo->{StrucRatio}{G},
+		$FileInfo->{StrucRatio}{E},
+		$FileInfo->{StrucRatio}{T},
+		$FileInfo->{StrucRatio}{B},
+		$FileInfo->{StrucRatio}{S},
+		$FileInfo->{StrucRatio}{I},
+		$FileInfo->{StrucRatio}{Rest};
+} # of sub GetDsspInfo
+
+
+sub DsspCodes { # prints out the DSSP Codes
+	print "\n";
+	print "DSSP Codes:  H = 4-turn helix (alpha helix)\n";
+	print "             G = 3-turn helix (3_10 helix)\n";
+	print "             E = beta sheet (parallel or antiparallel)\n";
+	print "             T = hydrogen-bonded turn\n";
+	print "             B = residue in isolated beta-bridge\n";
+	print "             S = bend\n";
+	print "             I = 5-turn helix (pi helix)\n";
+	print "\n\n";
+} # of sub DsspCodes

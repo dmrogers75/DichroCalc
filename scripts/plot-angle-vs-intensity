@@ -1,0 +1,164 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    plot-angle-vs-intensity
+#
+# Function:   Reads the intensity at a specific wavelength from .cd files and plots it
+#             against a dihedral angle, determined from the respective pdb file
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3923 $, $Date: 2009-02-12 02:12:40 +0000 (Thu, 12 Feb 2009) $
+#
+# Date:       July 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use ReadSpectrum;                    # to read xy data
+use GetParameters;                   # to handle command line parameters
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {    # create an anonymous hash
+   w      => "string",
+	o      => "string",
+	r      => "string",
+	a      => "string",
+	t      => "string",
+	v      => "switch",
+	xlabel => "string",
+};
+
+my $Options = {       # create an anonymous hash
+	r      => 2,
+	a      => 1,
+	w      => "220",
+	xlabel => "Dihedral angle",
+};
+
+my $Help = "\n" .
+"Usage:   plot-angle-vs-intensity *.cd [-w wavelength] [-o outfile] [-r residue] [-v]\n" .
+"                                      [-a angle] [-t title] [-xlabel \"label\"]\n" .
+"\n" .
+"        -w       the wavelength whose intensity is to be taken\n" .
+"        -o       output file, if omitted the base name of the first file is used\n" .
+"        -t       the title of the plot\n" .
+"        -xlabel  the label of the x-axis\n" .
+"        -v       verbose mode\n" .
+"\n" .
+"        -r       residue to use (i.e. the line, 1 for 1st residue, 2 for 2nd, ...)\n" .
+"                 default is 2 (for the middle residue in a trimer)\n" .
+"\n" .
+"        -a       the dihedral angle to be used (i.e. the column):\n" .
+"                 1 = phi (default), 2 = psi, 3 = chi1, 4 = chi2, ...)\n" .
+"\n" .
+"        The parameters -r and -a refer to the output of the following command:\n" .
+"        dihedrals file.pdb\n" .
+"\n";
+
+####################################################################################################
+
+my ($File, @Output, @Spectrum, $Intensity, $Angle, @Fields, $Counter, $yMin, $yMax);
+
+GetParameters ($Parameters, $Options, $Help);
+
+if (not $Options->{rest}) {
+	print STDERR "\nERROR: No input files given!\n\n";
+	exit 1;
+}
+
+if (not $Options->{o}) {
+	$Options->{o} = $Options->{rest}[0];
+	$Options->{o} =~ s/\.(pdb|cd)$//;
+	$Options->{o} = $Options->{o} . "." . $Options->{w};
+}
+
+open XY, ">$Options->{o}.xy" or die "ERROR: Could not write $Options->{o}.xy: $!";
+
+$Counter = 0;
+
+foreach $File ( @{$Options->{rest}} ) {
+	$File =~ s/\.(pdb|cd)$//; # remove the extension
+	
+	if (not -f "$File.cd") {
+		print STDERR "\nERROR: $File.cd not found! Skipping...\n\n";
+		next;
+	}
+	
+	if (not -f "$File.pdb") {
+		print STDERR "\nERROR: $File.pdb not found! Skipping...\n\n";
+		next;
+	}
+	
+	++$Counter;
+
+	if ($Options->{v}) {
+		print "Processing file number $Counter, $File...\n";
+	}
+	
+	@Spectrum = ReadSpectrum ("$File.cd");
+	
+	# search for the requested wavelength (or the next bigger one)
+	while ($Spectrum[0]->[0] < $Options->{w}) { shift @Spectrum }
+	
+	if (not @Spectrum) {
+		print STDERR "\nERROR: Wavelength $Options->{w} not found in $File.cd!\n\n";
+		exit 4;
+	}
+	
+	$Intensity = $Spectrum[0]->[1];
+	
+	# determine the dihedral angles
+	@Output = `dihedrals $File.pdb`;
+	
+	
+	until ($Output[0] =~ m/Phi.+Psi/) { shift @Output }   # remove all lines before the first angle
+	shift @Output;                                        # remove the column headers (Nr Res Phi ...)
+	
+	$Output[$Options->{r}-1] =~ s/^\s+//;                 # remove leading blanks of the line to be used
+	@Fields = split /[\s\t]+/, $Output[$Options->{r}-1];  # split the requested line into columns
+	$Angle = $Fields[$Options->{a}+1];							# select the requested angle from the output
+	
+	print XY "$Angle\t$Intensity\n";	
+}
+
+close XY;
+
+@Spectrum = ReadSpectrum ("$Options->{o}.xy");    # read the created spectrum
+($yMin, $yMax) = yExtrema (\@Spectrum, 1);        # determine symmetric yRanges
+
+$yMax = int $yMax;
+$yMax = 1.1 * $yMax;
+$yMin = -$yMax;
+
+open  CMD, ">$Options->{o}.cmd" or die "ERROR: Could not write $Options->{o}.cmd: $!";
+print CMD "set terminal postscript enhanced colour solid\n";
+print CMD "set output \"$Options->{o}.ps\"\n\n";
+
+if ($Options->{t}) {
+	print CMD "set title \"$Options->{t}\"\n\n";
+}
+
+print CMD "set xlabel \"$Options->{xlabel}\"\n";
+print CMD "set ylabel \"Intensity\"\n\n";
+print CMD "set xtics 30\n";
+print CMD "set key above\n\n";
+print CMD "set xrange [-190:190]\n";
+print CMD "set yrange [$yMin:$yMax]\n\n";
+print CMD "set xzeroaxis\n";
+
+print CMD "plot \"$Options->{o}.xy\" with points\n\n";
+
+close CMD;
+
+system "gnuplot $Options->{o}.cmd";
+

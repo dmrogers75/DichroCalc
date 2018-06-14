@@ -1,0 +1,286 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    chromophoretypes
+#
+# Function:   Reads an .stf file and prints out the used chromophores with a count of how many
+#             times they were used for the protein. Also plots a bar chart to visualize the
+#             distribution and calculates the percentages of helix, strand-like and hybrid
+#             chromophores.
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3922 $, $Date: 2009-02-12 02:12:38 +0000 (Thu, 12 Feb 2009) $
+#
+# Date:       June 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use ReadMatmac;                      # read matmac input and output files
+use GetParameters;                   # to handle command line parameters
+use ReadMatmac;                      # to read matmac input/output files
+
+###################################################################################################
+# Configuration Variables
+####################################################################################################
+
+my @ChromHelix  = qw/CT31009A CT-3109A CTBT009B CT-BT09B CTAL009A CT-AL09A CT15009A CT-1509A/;
+my @ChromHybrid = qw/CT02009B CT-0209B CT08009A CT-0809A CT03009A CT-0309A/;
+my @ChromStrand = qw/CT01009A CTBE009A CT-BE09A CT05009A CT-0509A/;
+
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {     # create an anonymous hash
+	o      => "string",
+	p      => "switch",
+	noloc  => "switch",
+};
+
+my $Options = {};     # create an anonymous hash
+
+my $Help = "\n" .
+	"Usage:   chromophoretypes file.stf [-p] [-o]\n" .
+	"\n" .
+	"         Prints out a list of all used chromophores and the number of times\n" .
+	"         they were used.\n" .
+	"\n" .
+	"          -p      plot the result with gnuplot\n" .
+	"          -o      define an output file for the plot\n" .
+	"          -noloc  omit local (backbone) chromophore\n" .
+	"\n";
+
+####################################################################################################
+
+my ($InFile, $Type, $Counters, $i, $CurChrom);
+my $StfData      = {}; # create an anonymous hash 
+my $Chromophores = []; # create an anynymous array
+
+# join the chromophore names to strings since this is easier to test than the array
+my $Helix  = join " ", @ChromHelix;
+my $Hybrid = join " ", @ChromHybrid;
+my $Strand = join " ", @ChromStrand;
+
+GetParameters ($Parameters, $Options, $Help);
+
+if (not $Options->{rest}) {
+	print STDERR "\nERROR: No file given to process!\n\n";
+	exit 1;
+}
+
+$InFile = shift @{$Options->{rest}};
+
+# remove the most common matmac extensions to get the base name
+$InFile =~ s/\.(pdb|stf|fmt|vec|pol|dbg)$//;
+
+ReadStfFile ($InFile, $StfData);
+ReadChromophoresDat ($Chromophores);
+
+# save the base name of the input file in $StfData for the use in CreateCommandFile
+$StfData->{BaseName} = $InFile;
+
+if (not defined $StfData->{Types}) {
+	print STDERR "\nERROR: Could not read $InFile.stf!\n\n";
+	exit 2;
+}
+
+# initialize the counters for all types (set them to zero)
+for ( 0 .. $StfData->{TypeNumber} ) { $StfData->{TypeCount}[$_]  = 0 }
+
+# count the chromophore types
+foreach $Type ( @{$StfData->{Types}} ) {
+	++$StfData->{TypeCount}[$Type-1]; # -1 because the number then corresponds to the array index in StfData{Names}
+}
+
+# print the chromophore names and their counts to STDOUT
+for $i ( 0 .. $#{$StfData->{Names}} ) {
+	# determine the structure type of the chromophore
+	if ($StfData->{Names}[$i] eq "NMA4FIT2" or $StfData->{Names}[$i] eq "NMA99WDY") {
+		$Type = "backbone";
+	} 
+	elsif ($Helix =~ m/$StfData->{Names}[$i]/)  { $Type = "helical" }
+	elsif ($Hybrid =~ m/$StfData->{Names}[$i]/) { $Type = "hybrid"  }
+	elsif ($Strand =~ m/$StfData->{Names}[$i]/) { $Type = "strand"  }
+	else {
+		$Type = "unknown";
+	}
+
+	if ($Chromophores) {
+		$CurChrom = &GetChromophore ($StfData->{Names}[$i], $Chromophores);
+	}
+	
+	printf "%8s %4d %5.0f %5.0f $Type\n", $StfData->{Names}[$i], $StfData->{TypeCount}[$i], $CurChrom->{Phi}, $CurChrom->{Psi};
+}
+
+&DeterminePercentages ($StfData);
+
+if ($Options->{noloc}) {
+	shift @{$StfData->{Names}};
+	shift @{$StfData->{TypeCount}};
+}
+
+if ($Options->{p}) {
+	$StfData->{OutFile} = $Options->{o};
+	&CreateCommandFile ($StfData);
+}
+
+####################################################################################################
+# Subroutines
+####################################################################################################
+
+sub DeterminePercentages { # determines the percentages of helical, strand-like and mixed chromophores
+	my $StfData = shift;
+	my ($Groups, $i, $Chrom);
+	# initialize the counters for the different chromophore types
+	my ($HelixCount, $HybridCount, $StrandCount) = (0, 0, 0);
+	
+	# join the chromophore names to strings since this is easier to test than the array
+	my $Helix  = join " ", @ChromHelix;
+	my $Hybrid = join " ", @ChromHybrid;
+	my $Strand = join " ", @ChromStrand;
+	
+	for $i ( 0 .. $#{$StfData->{Names}} ) {
+		# skip the local chromophore
+		if ($StfData->{Names}[$i] eq "NMA4FIT2" or
+		    $StfData->{Names}[$i] eq "NMA99WDY") { next } 
+		
+		if ($Helix =~ m/$StfData->{Names}[$i]/) {
+			$HelixCount = $HelixCount + $StfData->{TypeCount}[$i];
+		}
+		elsif ($Hybrid =~ m/$StfData->{Names}[$i]/) {
+			$HybridCount = $HybridCount + $StfData->{TypeCount}[$i];
+		}
+		elsif ($Strand =~ m/$StfData->{Names}[$i]/) {
+			$StrandCount = $StrandCount + $StfData->{TypeCount}[$i];
+		}
+		else {
+			print STDERR "\nERROR: Could not assign $StfData->{Names}[$i] into helix, strand or mixed!\n\n";
+			exit 10;
+		}
+	}
+
+	# Determine the number of CT-groups. This is the sum of all CT chromophores
+	$Groups = $HelixCount + $HybridCount + $StrandCount;
+	
+	if ($Groups == 0) {
+		printf "\nStrand  chromophores: %4d %5.1f%%\n" .
+				"Hybrid  chromophores: %4d %5.1f%%\n" .
+				"Helical chromophores: %4d %5.1f%%\n\n",
+				$StrandCount, $HybridCount, $HelixCount;
+	}
+	else {
+		printf "\nStrand  chromophores: %4d %5.1f%%\n" .
+				"Hybrid  chromophores: %4d %5.1f%%\n" .
+				"Helical chromophores: %4d %5.1f%%\n\n",
+				$StrandCount, $StrandCount/$Groups*100,
+				$HybridCount, $HybridCount/$Groups*100,
+				$HelixCount,  $HelixCount/$Groups*100;
+	}
+} # DeterminePercentages
+
+
+sub GetChromophore { # searches the hash for a particular chromophore from chromophores.dat
+	my $Chrom        = shift;
+	my $Chromophores = shift;
+	my $CurChrom;
+
+	foreach $CurChrom ( @{$Chromophores} ) {
+		if ($Chrom eq $CurChrom->{Name}) { return $CurChrom }
+	}
+
+	return "";
+} # of sub GetChromophore
+
+
+sub CreateCommandFile { # creates a command file for plotting a bar chart with gnuplot
+	my $StfData = shift;
+	my ($ChromNames, $Counter);
+	
+	open FILE, ">$StfData->{BaseName}.cmd" or die "ERROR: Could not create file $StfData->{BaseName}.stf: $!";
+	
+	print FILE "set encoding iso_8859_1\n";
+	
+	
+	if ($StfData->{OutFile}) {
+		# add the .ps extension, if it was omitted
+		if ($StfData->{OutFile} !~ m/\.ps$/) { $StfData->{OutFile} = $StfData->{OutFile} . ".ps" }
+		
+		print FILE "set terminal postscript enhanced colour \"Helvetica\" 18\n";
+		print FILE "set output \"$StfData->{OutFile}\"\n\n";
+	}
+	else {
+	}
+	
+	print FILE "set xzeroaxis\n";
+
+	# old syntax (before gnuplot 4.2)
+	# print FILE "set ticscale 1.0 0.6\n\n";
+	print FILE "set tics scale 1.0\n\n";
+	
+	$Counter = 0;
+	$ChromNames = "";
+	
+	# create the list of chromophore names to rename the tics of the x-axis
+	foreach ( @{$StfData->{Names}} ) {
+		++$Counter;
+		$ChromNames = $ChromNames . "\"$_\" $Counter, ";
+	}
+	
+	$ChromNames =~ s/, $//;   # remove the last comma again 
+	
+	print FILE "set xtics ($ChromNames)\n";
+	print FILE "set xtics rotate by -45\n";	
+	print FILE "set ytics border nomirror norotate\n\n";
+	print FILE "set title \"$StfData->{BaseName}\"\n";
+	print FILE "show label\n";
+	
+	# print FILE "set xlabel \"chromophore names\"\n";
+	# print FILE "set ylabel \"number of times used\"\n\n";
+	
+	print FILE "set xrange [0:", $#{$StfData->{Names}}+2, "]\n";
+	print FILE "set style fill solid\n";
+	print FILE "set boxwidth 0.6\n";
+	print FILE "unset key\n";
+	
+	print FILE "\n";
+
+	# old syntax (before gnuplot 4.2)
+	# print FILE "set arrow lt 1 lw 4 nohead from graph 0.275, 0 to graph 0.275, 1\n";
+	# print FILE "set arrow lt 1 lw 4 nohead from graph 0.575, 0 to graph 0.575, 1\n";
+
+	print FILE "set arrow nohead lt 1 lw 4 from graph 0.275, 0 to graph 0.275, 1\n";
+	print FILE "set arrow nohead lt 1 lw 4 from graph 0.575, 0 to graph 0.575, 1\n";
+	print FILE "\n";
+	
+	# the "-" command is used to plot points directly from the cmd file
+	print FILE "plot \"-\" with boxes\n";
+	
+	$Counter = 0;
+	
+	# create the list of chromophore names to rename the tics of the x-axis
+	foreach ( @{$StfData->{TypeCount}} ) {
+		++$Counter;
+		print FILE "$Counter\t$_\n"
+	}
+	print FILE "end\n\n";
+	
+	
+	$Counter = 0;
+	
+	# if not postscript is requested, gnuplot is kept alive
+	if (not $StfData->{OutFile}) { print FILE "\npause -1\n" }
+	
+	close FILE;
+	
+	system "gnuplot $StfData->{BaseName}.cmd";
+} # of sub CreateCommandFile
+

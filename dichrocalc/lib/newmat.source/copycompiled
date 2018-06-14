@@ -1,0 +1,36 @@
+#!/bin/bash
+
+LIBDIR=".."
+
+if [[ "$1" = "darwin" || "$1" = "linux" ]]; then
+	ARCH=$1
+else
+	echo
+	echo "Usage:   copycompiled  linux|darwin"
+	echo
+	exit
+fi
+
+echo
+echo "Clearing $LIBDIR"
+rm -f $LIBDIR/*.a
+
+echo "Copying $ARCH library:"
+echo
+echo "NewMat v11:"
+
+for file in libnewmat.a
+do
+	if [[ ! -f source.$ARCH/$file ]]; then
+		echo " -> source.$ARCH/$file - ERROR: NOT FOUND!"
+	else
+		echo "   -> $file..."
+		cp source.$ARCH/$file $LIBDIR/
+	fi
+done
+
+################################################################################
+
+echo
+echo "Done."
+echo

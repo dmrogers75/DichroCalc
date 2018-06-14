@@ -1,0 +1,201 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    deletepdbatoms
+#
+# Function:   Deletes all atoms except C, N, O, CA in a PDB file to minimize the number of 
+#             coordinates, especially for big proteins which cannot be calculated by matmac
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 4636 $, $Date: 2009-07-16 00:31:32 +0100 (Thu, 16 Jul 2009) $
+#
+# Date:       March 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use GetParameters;                   # to handle command line parameters
+use ParsePDB;                        # to read and parse PDB files
+
+
+####################################################################################################
+# Configuration Variables
+####################################################################################################
+
+my $ATOMS = {       # atom labels, taken from dcinput
+	peptide => "CA|C|O|N",
+	urea    => "C|O|N",
+	CT      => "C|O|N|C|O|N",
+	PHE     => "CG|CD1|CE1|CZ|CE2|CD2",
+	TYR     => "CZ|CE1|CE2|CD1|CD2|CG|OH",
+	TRP     => "CG|CD2|CE2|CE3|CD1|NE1|CZ2|CZ3|CH2",
+	ASP     => "CG|OD1|OD2",
+	GLU     => "CD|OE1|OE2",
+	GLN     => "CD|OE1|NE2",
+	ASN     => "CG|OD1|ND2",
+	TERM    => "C|OT1|OT2",
+	ASPLYS  => "CG|OD1|NZ",
+	A       => "N1|C2|N3|C4|C5|C6|N6|N7|C8|N9",
+	G       => "N1|C2|N2|N3|C4|C5|C6|O6|N7|C8|N9",
+	T       => "N1|C2|O2|N3|C4|O4|C5|C6",
+	C       => "N1|C2|O2|N3|C4|N4|C5|C6",
+	U       => "N1|C2|O2|N3|C4|O4|C5|C6",
+};
+
+
+####################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {     # create an anonymous hash
+	o        => "string",      # the output file
+	
+	urea     => "switch",      # to assign urea instead of peptide chromophores
+	
+	sc       => "switch",      # include aromatic side chain chromophores
+	phe      => "switch",      # include phenylalanine side chain group
+	tyr      => "switch",      # include tyrosine side chain group
+	trp      => "switch",      # include tryptophan side chain group
+	
+	scn      => "switch",      # include non-aromatic side chain groups (asp, glu, asn, gln)
+	asp      => 'switch',      # include the aspartic acid carboxy group
+	glu      => 'switch',      # include the glutamic acid carboxy group
+	asn      => "switch",      # include asparagine side chain peptide group
+	gln      => "switch",      # include glutamine side chain peptide group
+	
+	nb       => "switch",      # include DNA base chromophores
+	ct       => "switch",      # include charge-transfer chromophores
+	cyc      => "switch",      # include cyclic peptide bonds between non-successive residues
+	term     => "switch",      # include the terminal carboxyl group
+};
+
+my $Options = {};     # create an anonymous hash
+
+my $Help = "\n" .
+	"Usage:   deletepdbatoms [-o outfile.pdb] [options] file.pdb\n" .
+	"\n" .
+	"      -sc       include aromatic side chain transitions of PHE, TYR and TRP\n" .
+	"        -phe      include phenylalanine side chain group\n" .
+	"        -tyr      include tyrosine side chain group\n" .
+	"        -trp      include tryptophan side chain group\n" .
+	"\n" .
+	"      -scn      include non-aromatic side chain transitions of ASP, GLU, ASN and GLN\n" .
+	"        -asp      include the aspartic acid carboxyl group\n" .
+	"        -glu      include the glutamic acid carboxyl group\n" .
+	"        -asn      include asparagine side chain peptide group\n" .
+	"        -gln      include glutamine side chain peptide group\n" .
+	"\n" .
+	"      -nb       include parameters for nucleic bases\n" .
+	"      -cyc      look for peptide bonds between non-successive residues\n" .
+	"                (currently LYS-ASP, CG OD1 NZ supported)\n" .
+	"      -term     include the terminal carboxyl group\n" .
+	"\n";
+
+####################################################################################################
+
+my ($PDB, $File, $OutFile);
+
+GetParameters ($Parameters, $Options, $Help);
+
+# -sc is synonymous for all aromatic side chain chromophores
+if ($Options->{sc}) {
+	$Options->{phe} = 1;
+	$Options->{tyr} = 1;
+	$Options->{trp} = 1;
+}
+
+# -scn is synonymous for all non-aromatic side chain chromophores
+if ($Options->{scn}) {
+	$Options->{asn} = 1;
+	$Options->{gln} = 1;
+	$Options->{asp} = 1;
+	$Options->{glu} = 1;
+}
+
+foreach $File ( @{$Options->{rest}} ) {
+	if ($Options->{o}) { $OutFile = $Options->{o} }
+	else {
+		$OutFile = $File;
+		$OutFile =~ s/\.pdb//;
+		$OutFile = "$OutFile.new.pdb";
+	}
+	
+	&DeletePDBAtoms ($File, $OutFile);
+}
+
+
+####################################################################################################
+# SUBROUTINES
+####################################################################################################
+
+sub DeletePDBAtoms {
+	my $File       = shift;
+	my $OutFile    = shift;
+	
+	my ($Group, $Residue, $Chain, @AtomIndex, $Atom, $TypForm, $Line, $AtomTypes);
+	
+	$PDB = ParsePDB->new (FileName => $File, NoHETATM => 1, NoANISIG => 1, AtomLocations => "First");
+	
+	open PDB, ">$OutFile";
+	print PDB $PDB->GetMinHeader;
+	
+	foreach $Chain ( $PDB->IdentifyChains (Model => 0) ) {
+		@AtomIndex = $PDB->Get (Model => 0, Chain => $Chain, AtomIndex => 1);
+		
+		foreach $Atom (@AtomIndex) {
+			# reset the atom types
+			$AtomTypes = $ATOMS->{peptide};
+			
+			foreach $Group ( qw/phe tyr trp asn asp gln glu/) {
+				$Residue = uc $Group;
+				
+				if ($Options->{$Group} and $Atom->{ResidueLabel} eq $Residue) {
+					$AtomTypes = "$AtomTypes|$ATOMS->{$Residue}";
+				}
+			}
+			
+			if ($Options->{term}) { $AtomTypes = "$AtomTypes|$ATOMS->{term}"; }
+			
+			if ($Options->{asplys} and 
+			      ($Atom->{ResidueLabel} eq "ASP" or $Atom->{ResidueLabel} eq "LYS") ) {
+				$AtomTypes = "$AtomTypes|$ATOMS->{ASPLYS}";
+			}
+			
+			if ($Options->{nb}) {
+				foreach $Group ( qw/a t g c u/) {
+					$Residue = uc $Group;
+				
+					if ($Atom->{ResidueLabel} eq $Residue) {
+						$AtomTypes = "$AtomTypes|$ATOMS->{$Residue}";
+					}
+				}
+			}
+			
+			if ($Atom->{AtomType} =~ m/^($AtomTypes)$/) {
+				$Line = $PDB->FormatLine (Atom => $Atom);
+				
+				if (not $Line) {
+					print STDERR "ERROR: No PDB line was returned by ParsePDB!\n";
+					last;
+				}
+				
+				print PDB $Line;
+			}
+		} # of foreach $Atom (@Atomindex)
+		
+		print PDB "TER", " "x77, "\n";
+	} # of foreach $Chain ()
+	
+	print PDB $PDB->GetMinFooter;
+	close PDB;
+	
+	return 1;
+} # of sub DeletePDBAtoms
+

@@ -1,0 +1,107 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    checkpdbsize
+#
+# Function:   checks whether the size of a PDB is OK for a matmac calculation
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 2945 $, $Date: 2008-04-28 17:13:10 +0100 (Mon, 28 Apr 2008) $
+#
+# Date:       November 2006
+#
+####################################################################################################
+
+use strict;                         # always use this!!!
+use lib "$ENV{HOME}/bin/perllib";   # add ~/bin/perllib to the library path
+use ParsePDB;                       # to parse PDB files
+use DebugPrint;                     # handy during debugging
+
+####################################################################################################
+# Configuration Variables
+####################################################################################################
+
+my $MaxAtoms    = 10000;
+my $MaxResidues = 2000;
+my $PrintAll    = 0;
+
+####################################################################################################
+
+my ($File, $PDB);
+my ($Chain, @Chains, $Residue, @Residues, $Atom, @Atoms);
+my ($AllResidues, $AllAtoms, $Atoms, $Residues);
+
+if (not @ARGV) {
+	print "\n";
+	print "Usage:   checkpdbsize file1 [file2] [...]\n";
+	print "         Checks the number of atoms and residues for the matmac maximum numbers\n";
+	print "         A =  too many atoms\n";
+	print "         R =  too many residues\n";
+	print "         . =  OK for calculation\n\n";
+	exit 1;
+}
+
+print "\n";
+print "               All Chains  Single Chains\n";
+print "File            BB    CT      BB    CT  \n";
+print "----------------------------------------\n";
+
+while (@ARGV) {
+	$File = shift;
+	my $Failed;
+	
+	if (not -f $File) {
+		print STDERR "ERROR: File $File not found!\n";
+		next;
+	}
+	
+	$PDB = ParsePDB->new (FileName => $File, NoHETATM => 1, NoANISIG => 1, Verbose => 0);
+	
+	$AllAtoms    = $PDB->CountAtoms    (Model => 0);
+	$AllResidues = $PDB->CountResidues (Model => 0);
+	
+	if ($AllAtoms    > $MaxAtoms   ) { $Failed->{"BB-A"} = "A" }
+	if ($AllResidues > $MaxResidues) { $Failed->{"BB-R"} = "R" }
+	
+	if ($AllAtoms    > $MaxAtoms * 2   ) { $Failed->{"CT-A"} = "A" }
+	if ($AllResidues > $MaxResidues * 2) { $Failed->{"CT-R"} = "R" }
+	
+	
+	@Chains = $PDB->IdentifyChains (Model => 0);
+	
+	foreach $Chain (@Chains) {
+		$Atoms    = $PDB->CountAtoms    (Model => 0, Chain => $Chain);
+		$Residues = $PDB->CountResidues (Model => 0, Chain => $Chain);
+		
+		if ($Atoms    > $MaxAtoms   ) { $Failed->{"BB-A-SC"} = "A" }
+		if ($Residues > $MaxResidues) { $Failed->{"BB-R-SC"} = "R" }
+		
+		if ($Atoms    > $MaxAtoms * 2    ) { $Failed->{"CT-A-SC"} = "A" }
+		if ($Residues > $MaxResidues * 2 ) { $Failed->{"CT-R-SC"} = "R" }
+	}
+	
+	$File =~ s/\.pdb$//;
+	
+	if ($Failed) {
+		foreach (qw/BB-A BB-R CT-A CT-R BB-A-SC BB-R-SC CT-A-SC CT-R-SC/) {
+			if (not $Failed->{$_}) { $Failed->{$_} = "." }
+		}
+		
+		printf "%-14s  %s%s    %s%s      %s%s    %s%s\n", $File,
+		$Failed->{"BB-A"},
+		$Failed->{"BB-R"},
+		$Failed->{"CT-A"},
+		$Failed->{"CT-R"},
+		$Failed->{"BB-A-SC"},
+		$Failed->{"BB-R-SC"},
+		$Failed->{"CT-A-SC"},
+		$Failed->{"CT-R-SC"};
+	}
+	else {
+		if ($PrintAll) { print "$File OK\n" }
+	}
+}
+
+print "\n";

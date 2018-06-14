@@ -1,0 +1,63 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    calculatepolangles
+#
+# Function:   Calculates the angles of the polarization vectors of a matmac calculation with the
+#             coordinate system axes
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3857 $, $Date: 2009-02-11 16:23:56 +0000 (Wed, 11 Feb 2009) $
+#
+# Date:       January 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use VectorMath;                      # for vector calculations
+use ReadMatmac;                      # for parsing matmac input/output files
+
+my (@PolData, $Line, $PolVec, $xAngle, $yAngle, $zAngle);
+
+my $xAxis = {x => 1, y => 0, z => 0};
+my $yAxis = {x => 0, y => 1, z => 0};
+my $zAxis = {x => 0, y => 0, z => 1};
+
+my $InFile = shift;
+
+if (not defined $InFile) {
+	print "\nUsage:   calculatepolangles file.pol\n\n";
+	exit 1;
+}
+
+if (not -f $InFile) {
+	if (-f "$InFile.pol") { $InFile = "$InFile.pol" }
+	else {
+		print STDERR "\nERROR: $InFile not found!\n\n";
+		exit 2;
+	}
+}
+
+ReadPolFile ($InFile, \@PolData);
+
+print "\nAngles of the polarization vectors with the\n\n";
+print "Nr.   x-Axis     y-Axis     z-Axis\n";
+
+for ($Line = 0; $Line <= $#PolData; ++$Line) {
+	$PolVec = $PolData[$Line]{VMU};
+	
+	$xAngle = Angle ($PolVec, $xAxis); 
+	$yAngle = Angle ($PolVec, $yAxis); 
+	$zAngle = Angle ($PolVec, $zAxis); 
+
+	print $Line+1, " ", 
+	sprintf ("%10.3f %10.3f %10.3f", $xAngle, $yAngle, $zAngle), "\n";
+}
+

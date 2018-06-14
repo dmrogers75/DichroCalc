@@ -1,0 +1,153 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    centrepdb
+#
+# Function:   Centres the molecule in a PDB file at the origin
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3949 $, $Date: 2009-02-12 18:14:06 +0000 (Thu, 12 Feb 2009) $
+#
+# Date:       November 2007
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use GetParameters;                   # to handle command line parameters
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {     # create an anonymous hash
+	o   => "string",
+	v   => "switch",
+	x   => "switch",
+	y   => "switch",
+	z   => "switch",
+};
+
+my $Options = {       # create an anonymous hash
+};
+
+my $Help = "\n" .
+"Usage:   centrepdb file.pdb [-options]\n" .
+"         -o     the output file (otherwise the input file is overwritten)\n" .
+"         -v     verbose mode (display the difference for each axis)\n" .
+"         -x     set lowest x value to zero\n" .
+"         -y     set lowest y value to zero\n" .
+"         -z     set lowest z value to zero\n" .
+"\n";
+
+####################################################################################################
+
+my (@Content, $Line, $x, $y, $z, $File, $Extrema, $Range, $Diff, $i);
+
+GetParameters ($Parameters, $Options, $Help);
+
+if (not $Options->{rest}) {
+	print STDERR "\nERROR: No file given!\n\n";
+	exit 1;
+}
+
+$File = shift @{$Options->{rest}};
+
+if (not $Options->{o}) { $Options->{o} = $File }
+
+$Options->{o} =~ s/\.pdb$//; # remove the extension, if entered
+
+if (not -f $File) {
+	if (not -f "$File.pdb") {
+		print STDERR "\nERROR: File $File could not be found!\n\n";
+		exit 2;
+	}
+	else {
+		$File = $File . ".pdb";
+	}
+}
+
+# initialize the values to avoid an error in the first comparison
+foreach ( qw/x y z/ ) {
+	$Extrema->{Min}{$_} =  1E20;
+	$Extrema->{Max}{$_} = -1E20;
+}
+
+open FILE, "<$File";
+@Content = <FILE>;
+close FILE;
+
+# determine the extreme values for each axis
+for $i (0 .. $#Content) {
+	$Line = $Content[$i];
+	
+	if ($Line !~ m/^(ATOM|HETATOM)/) { next }
+	
+	$x = substr ($Line, 30, 8); $x =~ s/\s//g;
+	$y = substr ($Line, 38, 8); $y =~ s/\s//g;
+	$z = substr ($Line, 46, 8); $z =~ s/\s//g;
+	
+	if ($x < $Extrema->{Min}{x}) { $Extrema->{Min}{x} = $x }
+	if ($x > $Extrema->{Max}{x}) { $Extrema->{Max}{x} = $x }
+	
+	if ($y < $Extrema->{Min}{y}) { $Extrema->{Min}{y} = $y }
+	if ($y > $Extrema->{Max}{y}) { $Extrema->{Max}{y} = $y }
+
+	if ($z < $Extrema->{Min}{z}) { $Extrema->{Min}{z} = $z }
+	if ($z > $Extrema->{Max}{z}) { $Extrema->{Max}{z} = $z }
+}
+
+for ( qw/x y z/ ) {
+	if ($Options->{$_}) {
+		# if the current coordinate should not take values below zero, add the 
+		# minimum value to all coordinates
+		# (this causes e.g. the molecule sitting on the xy plane, if -z is given)
+		$Diff->{$_} = -$Extrema->{Min}{$_};
+	}
+	else {
+		# determine the overall distance from the smallest point on an axis to the largest
+		$Range->{$_} = $Extrema->{Max}{$_} - $Extrema->{Min}{$_};
+		
+		# the centred position on an axis is -($Range/2)..+($Range/2)
+		# Diff is the value that has to be added to the axis value to centre the whole thing
+		$Diff->{$_} = ($Range->{$_}/2) - $Extrema->{Max}{$_};
+	}
+	
+	if ($Options->{v}) {
+		print "$_ values moved about ", $Diff->{$_}, "\n";
+	}
+}
+
+
+# nove all atoms about the calculated difference
+for $i (0 .. $#Content) {
+	$Line = $Content[$i];
+	
+	if ($Line !~ m/^(ATOM|HETATOM)/) { next }
+	
+	# cut out the current coordinate
+	$x = substr ($Line, 30, 8); $x =~ s/\s//g;
+	$y = substr ($Line, 38, 8); $y =~ s/\s//g;
+	$z = substr ($Line, 46, 8); $z =~ s/\s//g;
+	
+	# move the coordinate about the diff value to centre it
+	$x = $x + $Diff->{x};
+	$y = $y + $Diff->{y};
+	$z = $z + $Diff->{z};
+
+	# pluck in the new value
+	substr ($Content[$i], 30, 8) = sprintf "%8.3f", $x;
+	substr ($Content[$i], 38, 8) = sprintf "%8.3f", $y;
+	substr ($Content[$i], 46, 8) = sprintf "%8.3f", $z;
+}
+
+open FILE, ">$Options->{o}.pdb";
+print FILE @Content;
+close FILE;
+

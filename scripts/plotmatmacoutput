@@ -1,0 +1,1163 @@
+#!/usr/bin/perl -w
+
+#######################################################################################################################
+#
+# Program:    plotmatmacoutput
+#
+# Function:   plots the data from .kor, .dbg and .abi-files with GnuPlot and labels each data point
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3999 $, $Date: 2009-02-21 13:08:59 +0000 (Sat, 21 Feb 2009) $
+#
+# Date:       February 2006
+#
+#######################################################################################################################
+
+use strict;                         # always use this!!!
+use POSIX;                          # for asin and acos functions
+use Data::Dumper;                   # for printing arrays and hashes
+use lib "$ENV{HOME}/bin/perllib";   # add ~/bin/perllib to the library path
+use ReadMatmac;                     # to read several matmac output files
+use GetParameters;                  # to parse command line parameters
+use GetBaseName;                    # to split a filename into base name and extension
+use VectorMath;                     # for several vector calculations
+use DebugPrint;                     # handy during debugging
+
+$Data::Dumper::Sortkeys = 1;        # sort the hash keys alphabetically
+
+#######################################################################################################################
+# Configuration for GetParameters
+#######################################################################################################################
+
+my $Parameters = {             # defines all possible parameters
+	BaseName    => "string",    # default basename for several files written while plotting
+	CmdFile     => "string",    # default filename for the gnuplot command file
+	o           => "string",    # default output file for gnuplot
+	c           => "string",    # read configuration from file
+	t           => "string",    # define a title
+	cw          => "string",    # write configuration to file
+	cmd         => "switch",    # do not delete cmd and xyz files after plotting
+	gif         => "switch",    # create gif file instead of ps
+	res         => "string",    # adjust gif resulution
+	
+	nokey       => "switch",    # whether to show the legend or not
+	LabelPos    => "string",    # defines the offset of the atom labels from the actual atom position
+	Format      => "switch",    # format string used by sprintf and printf (if output is exported to a spreadsheet set to e.g. ".4f")
+	
+	v           => "string",    # defines the view (rotation around x, rotation around y)
+	size        => "string",    # sets the size of the plot, default is "1,1"
+	square      => "switch",    # whether to force a square or not
+	GlobalMax   => "switch",    # whether all axes should have the same scale
+	
+	x           => "string",    # if "true", the xrange will be set to -$Options->{xrange}:$Options->{xrange}, otherwise the maximum value is taken (what distorts the plot)
+	y           => "string",    # if "true", the yrange will be set to -$Options->{zrange}:$Options->{zrange}, otherwise the maximum value is taken (what distorts the plot)
+	z           => "string",    # if "true", the zrange will be set to -$Options->{zrange}:$Options->{zrange}, otherwise the maximum value is taken (what distorts the plot)
+	range       => "string",    # to set all range parameters at once
+	zlabels     => "switch",    # set to "false" to remove the labels along the z-axis
+	
+	xlabel      => "string",    # a string defining the label of the x axis
+	ylabel      => "string",    # a string defining the label of the y axis
+	zlabel      => "string",    # a string defining the label of the z axis
+	xtics       => "string",    # tic interval of x axis, if "0", the maximum x value is taken to determine the tic interval
+	ytics       => "string",    # tic interval of x axis, if "0", the maximum y value is taken to determine the tic interval
+	ztics       => "string",    # tic interval of x axis, if "0", the maximum z value is taken to determine the tic interval
+	
+	groups      => "string",    # -1 = show all groups, 0 = show only group 0, 01 = show groups 0 and 1
+	bonds       => "switch",    # whether the bond lines should be printed
+	atoms       => "switch",    # show the atoms
+	atomlabels  => "switch",    # show the atom labels (C1, N1, O1, ...)
+	veclabel    => "switch",    # show the labels of the vectors like VMU 1, VMU 2, ...
+	
+	XS          => "switch",    # show the XS vectors
+	RefXS       => "switch",    # show the RefXS vectors
+	VM          => "switch",    # show the VM vectors  (magnetic transition moment before calculation)
+	VMU         => "switch",    # show the VMU vectors (electric transition moment before calculation)
+	EM          => "switch",    # show the EM vectors  (magnetic transition moment after calculation)
+	EMU         => "switch",    # show the EMU vectors (electric transition moment after calculation)
+	EMAI        => "switch",    # show the VM ab initio vector
+	EMUAI       => "switch",    # show the VMU ab initio vector
+	PolVec      => "switch",    # show the VMU vector of the polarization calculation
+	
+	mono        => "switch",    # whether to show the monopoles or not
+	monocharge  => "switch",    # whether to show the monopole charge
+	round       => "switch",    # whether to round the monopole charges or not
+	
+	balance     => "switch",    # whether to print the balance points of the monopoles
+	centres     => "switch",    # whether to show the centre of the dipole
+	trans       => "string",    # -1 = All transitions, 0 = only first transition, 012 = 1st, 2nd, and 3rd transition (needs to be STRING for that feature...)
+	hyd         => "switch",    # show or omit the hydrogen
+	
+	PiPiThres   => "string",    # for the ab intio values: if the wavelength is below this value, the transition is reagarded as a Pi->Pi* transition
+	
+	ColourVM    => "string",    # the colour of the VM arrow and label
+	ColourVMU   => "string",    # the colour of the VMU arrow and label
+	ColourEMAI  => "string",    # the colour of the VM ab initio arrow and label
+	ColourEMUAI => "string",    # the colour of the VMU ab initio arrow and label
+	ColourEM    => "string",    # the colour of the EM arrow and label
+	ColourEMU   => "string",    # the colour of the EMU arrow and label
+	ColourPol1  => "string",    # the colour of PolVMU below 210 nm
+	ColourPol2  => "string",    # the colour of PolVMU above 210 nm
+};
+
+my $Options = {                # holds default values and (after parsing) the given parameters
+	BaseName    => "kordata",   # default basename for several files written while plotting
+	CmdFile     => "kordata",   # default filename for the gnuplot command file
+	xlabel      => "x / \305",  # default xlabel
+	ylabel      => "y / \305",  # default ylabel
+	zlabel      => "z / \305",  # default zlabel
+	
+	LabelPos    => 3,           # defines the offset of the atom labels from the actual atom position
+	Format      => '%.6f',      # format string used by sprintf and printf (if output is exported to a spreadsheet set to e.g. ".4f")
+	
+	v           => "0,0",       # defines the view (rotation around x, rotation around y)
+	size        => "1,1",       # sets the size of the plot, default is "1,1"
+	
+	groups      => "-1",        # -1 = show all groups, 0 = show only group 0, 01 = show groups 0 and 1
+	trans       => "-1",        # -1 = All transitions, 0 = only first transition, 012 = 1st, 2nd, and 3rd transition (needs to be STRING for that feature...)
+	round       => 1,           # whether to round the monopole charges or not
+	
+	PiPiThres   => 210,         # for the ab intio values: if the wavelength is below this value, the transition is reagarded as a Pi->Pi* transition
+	
+	ColourVM    => 1,           # the colour of the VM arrow and label
+	ColourVMU   => 3,           # the colour of the VMU arrow and label
+	ColourEMAI  => 5,           # the colour of the VM ab initio arrow and label
+	ColourEMUAI => 7,           # the colour of the VMU ab initio arrow and label
+	ColourEM    => 4,           # the colour of the EM arrow and label
+	ColourEMU   => 2,           # the colour of the EMU arrow and label
+	ColourPol1  => 1,           # the colour of PolVMU below 210 nm
+	ColourPol2  => 3,           # the colour of PolVMU above 210 nm
+};
+
+my $Help = "\n" .             # displayed when an error was found or -h was given
+	"\n".
+	"Usage:   plotmatmacoutput [BaseName] [Options]\n".
+	"\n\n" .	
+	"BaseName: base name of the .kor, .pol, .dbg, ... files generated by matmac containing\n" .
+	"          the data to be plotted. Can be omitted, if a configuration file is given\n".
+	"\n" .
+	"   -o            define an output postscript file. If omitted, gnuplot is kept alive.\n" .
+	"   -c            read configuration from the given file. If no extension is given,\n" .
+	"                 .cfg is tried.\n" .
+	"   -cw           write the configuration to the given file.\n" .
+	"   -t            define a title for the plot\n".
+	"   -nokey        do not show the legend\n" .
+	"   -LabelPos     defines the offset of the atom labels from the actual atom position\n" .
+	"   -cmd          keep the gnuplot .cmd file (and the .xyz files) after plotting\n" .
+	"   -gif          create a GIF file instead of postscript (automatically, if .gif\n" .
+	"                 extension is given with -o)\n" .
+	"   -res          defines the GIF resolution xres yres (default is 1024x768)\n" .
+	"\n" .
+	"   -v x,y        defines the view (rotation around x, rotation around y)\n" .
+	"   -size         sets the size of the plot, default is 1,1\n" .
+	"   -square       force a square for the plot\n" .
+	"   -GlobalMax    all axes should have the same scale\n" .
+	"   -Format       format string used by sprintf and printf\n" .
+	"                 (if output is exported to a spreadsheet set to e.g. \".4f\")\n" .
+	"\n" .
+	"   -range        set all range parameters to a certain value\n" .
+	"   -x x          set xrange to -x:x, otherwise use the maximum value (distortion!)\n" .
+	"   -y y          set yrange to -y:y, otherwise use the maximum value (distortion!)\n" .
+	"   -z z          set zrange to -z:z, otherwise use the maximum value (distortion!)\n".
+	"   -zlabels      show z-axis labels\n" .
+	"   -xlabel       define the x label\n" .
+	"   -ylabel       define the y label\n" .
+	"   -zlabel       define the z label\n" .
+	"   -xtics        tic interval of x axis\n" .
+	"   -ytics        tic interval of y axis\n" .
+	"   -ztics        tic interval of z axis\n" .
+	"\n" .
+	"   -groups       -1 = show all groups, 0 = show only group 0, 01 = show groups 0 and 1\n" .
+	"   -bonds        show the bonds\n" .
+	"   -atoms        show the atoms\n" .
+	"\n" .
+	"   -XS           show the XS vectors\n" .
+	"   -VM           show the VM vectors  (magnetic transition moment before calculation)\n" .
+	"   -VMU          show the VMU vectors (electric transition moment before calculation)\n" .
+	"   -EM           show the EM vectors  (magnetic transition moment after calculation)\n" .
+	"   -EMU          show the EMU vectors (electric transition moment after calculation)\n" .
+	"   -EMAI         show the VM ab initio vector\n" .
+	"   -EMUAI        show the VMU ab initio vector\n" .
+	"   -PolVec       show the VMU vector of the polarization calculation\n" .
+	"\n" .
+	"   -mono         show the monopoles or not\n" .
+	"   -monocharge   show the monopole charges\n" .
+	"   -round        round the charges\n" .
+	"   -balance      show the balance points of the monopoles\n" .
+	"   -centres      show the centre of the dipole\n" .
+	"   -trans        -1 = All transitions, 0 = only first transition, 012 = 1st, 2nd, and\n" .
+	"                 3rd transition (needs to be STRING for that feature...)\n" .
+	"   -atomlabels   show the atom labels (C1, N1, O1, ...)\n" .
+	"   -veclabel     show the labels of the vectors like VMU 1, VMU 2, ...\n" .
+	"   -hyd          show the hydrogen\n" .
+	"   -PiPiThres    for the ab initio values: if the wavelength is below this value, the\n" .
+	"                 transition is regarded as a Pi->Pi* transition\n" .
+	"\n" .
+	"   -ColourVM     colour of the VM arrow and label\n" .
+	"   -ColourVMU    colour of the VMU arrow and label\n" .
+	"   -ColourEMAI   colour of the VM ab initio arrow and label\n" .
+	"   -ColourEMUAI  colour of the VMU ab initio arrow and label\n" .
+	"   -ColourEM     colour of the EM arrow and label\n" .
+	"   -ColourEMU    colour of the EMU arrow and label\n" .
+	"   -ColourPol1   colour of PolVMU below 210 nm\n" .
+	"   -ColourPol2   colour of PolVMU above 210 nm\n" .
+	"\n\n";
+
+
+#######################################################################################################################
+
+my ($File);
+
+my $KorData = [];
+my $DbgData = {};
+my $AbiData = {};
+my $PolData = [];
+my $VecData = [];
+my $PdbData = {};
+
+
+#######################################################################################################################
+# Parse the command line parameters
+#######################################################################################################################
+
+GetParameters ($Parameters, $Options, $Help);
+
+if (not defined $Options->{c} and not defined $Options->{rest}) {
+	print STDERR "\nERROR: No input file given!\n\n";
+	exit 2;
+}
+
+# if BaseName is not given, it is read from the config file
+if ( $Options->{c}  ) { &ReadConfigFile ($Options->{c})   }
+
+# if a BaseName is given it overwrites the one from the config file (as all other parameters)
+if (defined $Options->{rest}) {
+	$Options->{BaseName} = shift @{$Options->{rest}};
+	$Options->{BaseName} =~ s/\.kor$//;
+	$Options->{BaseName} =~ s/\.pol$//;
+	$Options->{BaseName} =~ s/\.vec$//;
+	$Options->{BaseName} =~ s/\.out$//;
+	$Options->{BaseName} =~ s/\.dbg$//;
+	$Options->{BaseName} =~ s/\.mat$//;
+
+	if (@{$Options->{rest}}) {
+		print STDERR "\nERROR: The following parameters were not recognized:\n";
+		print STDERR join "\n", @{$Options->{rest}};
+		print STDERR "\n";
+		exit 1;
+	}
+}
+
+# at this time, the BaseName has already been defined and will be included in the ConfigFile
+if ( $Options->{cw} ) { &WriteConfigFile ($Options->{cw}) }
+
+if (defined $Options->{o}) {
+	# automatically enable the gif option, if the respective extension was given
+	if ($Options->{o} =~ m/\.gif$/) { $Options->{gif} = 1 }
+	
+	if ($Options->{gif}) {
+		if ($Options->{o} !~ m/\.gif$/) { $Options->{o} = $Options->{o} . ".gif" }
+	}
+	else {
+		if ($Options->{o} !~ m/\.ps$/) { $Options->{o} = $Options->{o} . ".ps" }
+	}
+}
+
+if (defined $Options->{o}) { # if an outfile is given, gnuplot will write to a .ps file
+	$Options->{KeepGnuplotAlive} = 0;
+}
+else { # if no outfile is given, gnuplot will write to an X11 window
+	$Options->{KeepGnuplotAlive} = 1;
+}
+
+#######################################################################################################################
+
+ ReadKorFile ($Options->{BaseName}, $KorData);
+ ReadPolFile ($Options->{BaseName}, $PolData);
+ ReadVecFile ($Options->{BaseName}, $VecData);
+ ReadDbgFile ($Options->{BaseName}, $DbgData);
+ ReadAbiFile ($Options->{BaseName}, $AbiData);
+&ReadPdbFile ($Options->{BaseName}, $PdbData);
+
+if (not $DbgData) {
+	$Options->{EM}  = 0;  # to avoid having to check the existence
+	$Options->{EMU} = 0;  # of the hash keys later on
+}
+
+$Options->{CmdFile} = "$Options->{BaseName}.cmd";
+
+&CreateCommandFile (KorData  => $KorData,
+                    PolData  => $PolData,
+                    VecData  => $VecData,
+                    DbgData  => $DbgData,
+                    AbiData  => $AbiData,
+                    PdbData  => $PdbData,
+                    Options => $Options);
+
+if (not -f $Options->{CmdFile}) {
+	print STDERR "\nAn error happened during the creation of the GnuPlot command file.\n";
+	print STDERR "$Options->{CmdFile} could not be found.\n\n";
+	exit 3;
+}
+
+my @Output = `gnuplot $Options->{CmdFile} 2>&1`;
+
+# discard leading empty lines of the @Output
+while (@Output and $Output[0] eq "\n") { shift @Output }
+
+# only print the gnuplot output if there actually is something to output (this omits the two empty 
+# lines which are usually printed and mess up the output of scripts plotting hundreds of spectra)
+if (@Output) { print join "", @Output }
+
+if (not $Options->{cmd}) {
+	system ("rm $Options->{CmdFile}");
+	system ("rm $Options->{BaseName}-dummy.xyz");
+	system ("rm $Options->{BaseName}-atoms.xyz");
+	
+	foreach $File (@{$Options->{TransFiles}})   { system ("rm $File") }
+	foreach $File (@{$Options->{BalanceFiles}}) { system ("rm $File") }
+	foreach $File (@{$Options->{CoDFiles}})     { system ("rm $File") }
+}
+
+
+
+#######################################################################################################################
+# SUBROUTINES
+#######################################################################################################################
+
+
+sub ReadPdbFile { # reads the coordinates of the CA atom, if a .pdb file is available
+	my $BaseName = shift;
+	my $PdbData  = shift;
+	
+	my (@Content, $Line, @Fields);
+	
+	if (not -f "$BaseName.pdb") { return }
+	
+	open PDB, "<$BaseName.pdb";
+	@Content = <PDB>;
+	close PDB;
+	
+	chomp @Content;
+	
+	while (@Content) {
+		$Line = shift @Content;
+		if (substr ($Line, 13, 3) eq "CA ") {
+			$Line = substr ($Line, 31);
+			$Line =~ s/^\s+|\s+$//g;
+			$Line =~ s/\s+/ /g;
+			@Fields = split (/\s/, $Line);
+			
+			$PdbData->{CAlpha} = {
+				x => $Fields[0],
+				y => $Fields[1],
+				z => $Fields[2],
+			};
+			
+			return;
+		}
+	}
+} # of sub ReadPdbFile
+
+
+sub ReadConfigFile {
+	my $FileName = shift;
+	my (@Content, @Fields, $Line);
+
+	if (not -f $FileName) {
+		if (-f "$FileName.cfg") { $FileName = "$FileName.cfg" }
+		else {
+			print STDERR "\nConfiguration file $FileName not found!\n\n";
+			exit 4;
+		}
+	}
+
+	open CONFIG, "<$FileName" or die "ERROR: File $FileName could not be opened!";
+	@Content = <CONFIG>;
+	chomp @Content;
+	close CONFIG;
+
+	print "\nReading configuration from $FileName...\n";
+
+	while ( @Content ) {
+		$Line = shift @Content;
+		
+		if ($Line =~ m/^#/) { next }
+		else {
+			$Line =~ s/^\s+|\s+$//g;
+			if ($Line eq "") { next }
+			@Fields = split /\t+/, $Line;
+
+			# Check whether this parameters was really given via the command line by the user
+			# ({GivenParams}{Param} instead of {Param} to ignore the default values which were
+			# saved to the Options hash before). Parameters given via the command line overwrite
+			# parameters in the config file.
+			if (not defined $Options->{GivenParams}{$Fields[0]}) {
+				$Options->{$Fields[0]} = $Fields[1];
+			}
+		}
+	}
+} # of sub ReadConfigFile
+
+
+sub WriteConfigFile {
+	my $FileName = shift;
+	my ($Key);
+	
+	if (not $FileName) { return }
+	if ($FileName !~ m/\.cfg$/) { $FileName = "$FileName.cfg" }
+	
+	print "\nWriting configuration to $FileName...\n";
+	open (CONFIG, ">$FileName");
+	print CONFIG "#######################################################################################################################\n";
+	print CONFIG "# Configuration variables\n";
+	print CONFIG "#######################################################################################################################\n";
+	print CONFIG "\n";
+
+	foreach $Key ( keys %{$Options} ) {
+		if ($Key eq "rest") { next } # the "rest" has already been saved in BaseName
+		if ($Key eq "cw"  ) { next } # inculding this would then always save the config file again
+
+		print CONFIG "$Key\t$Options->{$Key}\n";
+	}
+
+	close CONFIG;
+} # of sub WriteConfigFile
+
+
+sub CreateCommandFile { # creates a gnuplot command file from the matmac data
+	my %args = @_;
+	
+	my $KorData  = $args{KorData};
+	my $AbiData  = $args{AbiData};
+	my $DbgData  = $args{DbgData};
+	my $PolData  = $args{PolData};
+	my $VecData  = $args{VecData};
+	my $PdbData  = $args{PdbData};
+	my $Options  = $args{Options};
+	
+	my ($Label, $File, $i, $Position, $Offset, $PlotAtoms, $CurBaseName, $CurMono, $MonoColour);
+	my ($xO, $yO, $zO, $xXS, $yXS, $zXS, $LabelX, $LabelY, $LabelZ, $NumberOfAtoms);
+	my ($Atom, $GroupCount, $Transition, $Index, $Extrema, $Coords);
+	my ($CAtom, $NAtom, $OAtom, $HAtom, $XSAtom, $CHash, $NHash, $OHash, $HHash, $XSHash);
+	
+	open (PLOT, ">$Options->{CmdFile}");
+	
+	open (ATOMS, ">$Options->{BaseName}-atoms.xyz");
+	
+	########################################################################################################################
+	# Plot the atoms and bonds
+	########################################################################################################################
+	
+	$Extrema = { MinX =>  1E20, MinY =>  1E20, MinZ =>  1E20,
+	             MaxX => -1E20, MaxY => -1E20, MaxZ => -1E20 };
+	
+	for $GroupCount (0 .. $#{$KorData}) { # for all chromophoric groups
+		$NumberOfAtoms = scalar @{$KorData->[$GroupCount]{Atoms}};
+		
+		for $Atom (0 .. $#{$KorData->[$GroupCount]{Atoms}} ) { # for all atoms in a particular group
+			if ( ($Options->{groups} != -1) and ($GroupCount !~ m/[$Options->{groups}]/) ) {
+				last;
+			}
+			
+			if ($Options->{atoms}) {
+				$Coords = &GetXYZ ($KorData->[$GroupCount]{Atoms}[$Atom], $Extrema);
+			}
+			else {
+				$Coords = &GetXYZ ($KorData->[$GroupCount]{Atoms}[$Atom])
+			}
+			
+			$PlotAtoms = 1;
+			
+			if		($NumberOfAtoms == 4 and $Atom == 0) {
+				$Label = "C$GroupCount";
+				$Position = "right";
+				$Offset = "offset " . $Options->{LabelPos} * 2.5 . ", $Options->{LabelPos}";
+				# save the C atom coordinates as string for the drawing of the bond
+				$CAtom = "$Coords->{x}, $Coords->{y}, $Coords->{z}";
+				$CHash = $KorData->[$GroupCount]{Atoms}[$Atom];
+			}
+			elsif ($NumberOfAtoms == 4 and $Atom == 1) {
+				$Label = "O$GroupCount";
+				$Position = "left";
+				$Offset = "offset $Options->{LabelPos}, $Options->{LabelPos}";
+				# save the O atom coordinates as string for the drawing of the bond
+				$OAtom = "$Coords->{x}, $Coords->{y}, $Coords->{z}";
+				$OHash = $KorData->[$GroupCount]{Atoms}[$Atom];
+				$xO = $Coords->{x};
+				$yO = $Coords->{y};
+				$zO = $Coords->{z};
+			}
+			elsif ($NumberOfAtoms == 4 and $Atom == 2) {
+				$Label = "N$GroupCount";
+				$Position = "right";
+				$Offset = "offset -$Options->{LabelPos}, $Options->{LabelPos}";
+				# save the N atom coordinates as string for the drawing of the bond
+				$NAtom = "$Coords->{x}, $Coords->{y}, $Coords->{z}";
+				$NHash = $KorData->[$GroupCount]{Atoms}[$Atom];
+			}
+			elsif ($NumberOfAtoms == 4 and $Atom == 3) {
+				$Label = "H$GroupCount";
+				$Position = "right";
+				$Offset = "offset -$Options->{LabelPos}, $Options->{LabelPos}";
+				# save the H atom coordinates as string for the drawing of the bond
+				$HAtom = "$Coords->{x}, $Coords->{y}, $Coords->{z}";
+				$HHash = $KorData->[$GroupCount]{Atoms}[$Atom];
+				if (not $Options->{hyd}) { next }
+			}
+			else {
+				$Label = "";
+				$Offset = "offset 0";
+				$Position = "left";
+			}
+			
+			if ($Options->{atoms}) {
+				print ATOMS "$Coords->{x}\t$Coords->{y}\t$Coords->{z}\n";
+			}
+			
+			if ($Options->{atomlabels}) {
+				print PLOT "set label \"$Label\" at  $Coords->{x}, $Coords->{y}, $Coords->{z} ",
+				           "$Position point lt 1 pt 1 $Offset \n";
+			}
+		} # of for $Atom (0 .. $#{$KorData->[$GroupCount]{Atoms}})
+		
+		if ($PdbData->{CAlpha}) {
+			$Coords = &GetXYZ ($PdbData->{CAlpha}, $Extrema);
+			
+			if ($Options->{atoms}) {
+				print ATOMS "$Coords->{x}\t$Coords->{y}\t$Coords->{z}\n";
+			}
+			
+			if ($Options->{atomlabels}) {
+				print PLOT "set label \"CA\" at  $Coords->{x}, $Coords->{y}, $Coords->{z} ",
+				           "$Position point lt 1 pt 1 $Offset \n";
+			}
+		}
+		
+		if ($Options->{bonds}) {
+			if ( ($Options->{groups} == -1) or ($GroupCount =~ m/[$Options->{groups}]/) ) {
+				if ($Options->{hyd} and $HAtom) {
+					# draw the bond line from N to H
+					print PLOT "set arrow from $NAtom to $HAtom nohead lt 7 lw 3\n"; 
+				}
+				
+				# draw the bond line from N to C
+				print PLOT "set arrow from $NAtom to $CAtom nohead lt 7 lw 3\n";
+				# draw the bond line from C to O
+				print PLOT "set arrow from $CAtom to $OAtom nohead lt 7 lw 3\n";
+			}
+		}
+		
+		$XSHash = $KorData->[$GroupCount]{XS};
+		$Coords = &GetXYZ ($XSHash);
+		$XSAtom = "$Coords->{x}, $Coords->{y}, $Coords->{z}";
+		$xXS = $Coords->{x};
+		$yXS = $Coords->{y};
+		$zXS = $Coords->{z};
+		
+		
+		########################################################################################################################
+		# Plot the ATOM XS-Vector (the old origin)
+		########################################################################################################################
+		
+		if ($Options->{XS}) {
+			if ( ($Options->{groups} == -1) or ($GroupCount =~ m/[$Options->{groups}]/) ) {
+				$Coords = &GetXYZ ($KorData->[$GroupCount]{XS}, $Extrema);
+				
+				print PLOT "set arrow from 0, 0, 0 to $Coords->{x}, $Coords->{y}, $Coords->{z} filled lt 2 lw 1\n";
+				print PLOT "set label \"XS\" at $Coords->{x}, $Coords->{y}, $Coords->{z} ",
+				           "left offset $Options->{LabelPos}, $Options->{LabelPos}\n";
+			}
+		}
+		
+		########################################################################################################################
+		# Plot the REF XS-Vector
+		########################################################################################################################
+		
+		if ($Options->{RefXS}) {
+			if ( ($Options->{groups} == -1) or ($GroupCount =~ m/[$Options->{groups}]/) ) {
+				$Coords = &GetXYZ ($KorData->[$GroupCount]{RefXS}, $Extrema);
+				
+				print PLOT "set arrow from 0, 0, 0 to $Coords->{x}, $Coords->{y}, $Coords->{z} filled lt 2 lw 1\n";
+				print PLOT "set label \"RefXS\" at $Coords->{x}, $Coords->{y}, $Coords->{z} ",
+				           "left offset $Options->{LabelPos}, $Options->{LabelPos}\n";
+			}
+		}
+		
+		########################################################################################################################
+		# Plot the magnetic and electric moment vector before the matmac calculation
+		########################################################################################################################
+		
+		if ($Options->{VM}) {
+			if ( ($Options->{groups} == -1) or ($GroupCount =~ m/[$Options->{groups}]/) ) {
+				for $Transition (0 .. $#{$KorData->[$GroupCount]{Transitions}} ) {
+					if ( ($Options->{trans} != -1) and ($Transition !~ m/[$Options->{trans}]/) ) {
+						next;
+					}
+					
+					$Coords = &GetXYZ ($KorData->[$GroupCount]{Transitions}[$Transition]{VM}, $Extrema);
+					&MoveOrigin ($XSHash, $Coords);
+					print PLOT "set arrow from $XSAtom to $Coords->{x}, $Coords->{y}, $Coords->{z} filled lt ",
+					            $Options->{ColourVM}," lw 1\n";
+					$Offset =  "offset -" . $Options->{LabelPos} * 5 . ", $Options->{LabelPos}";
+					# mind, that $Transitions+1 is printed to be consistent with the matmac output (since Fortran starts counting at 1)
+					
+					if ($Options->{veclabel}) {
+						print PLOT "set label \"VM ", $Transition+1, "\" at $Coords->{x}, $Coords->{y}, $Coords->{z}left textcolour lt ",
+						            $Options->{ColourVM}," point lt 0 pt 0 $Offset\n";
+					}
+				}
+			}
+		}
+		
+		if ($Options->{VMU}) {
+			if ( ($Options->{groups} == -1) or ($GroupCount =~ m/[$Options->{groups}]/) ) {
+				for $Transition (0 .. $#{$KorData->[$GroupCount]{Transitions}} ) {
+					if ( ($Options->{trans} != -1) and ($Transition !~ m/[$Options->{trans}]/) ) { next }
+					
+					$Coords = &GetXYZ ($KorData->[$GroupCount]{Transitions}[$Transition]{VMU}, $Extrema);
+					&MoveOrigin ($XSHash, $Coords, $Extrema);
+					
+					print PLOT "set arrow from $XSAtom to $Coords->{x}, $Coords->{y}, $Coords->{z} filled lt ",
+					            $Options->{ColourVMU}," lw 1\n";  # "+1" because line type 0 is only dotted
+					$Offset =  "offset -" . $Options->{LabelPos} * 5 . ", $Options->{LabelPos}";
+					# mind, that $Transitions+1 is printed to be consistent with the matmac output (since Fortran starts counting at 1)
+					
+					if ($Options->{veclabel}) {
+						print PLOT "set label \"VMU ", $Transition+1 ,"\" at $Coords->{x}, $Coords->{y}, $Coords->{z} left textcolour lt ",
+						            $Options->{ColourVMU}," point lt 0 pt 0 $Offset\n";
+					}
+				}
+			}
+		}
+		
+		
+		########################################################################################################################
+		# Plot the monopoles, dipole centres and balance points
+		########################################################################################################################
+		
+		if ($Options->{mono} or $Options->{monocharge}) {
+			for $Transition (0 .. $#{$KorData->[$GroupCount]{Transitions}} ) {
+				
+				if ( ($Options->{trans} == -1) or ($Transition =~ m/[$Options->{trans}]/) ) {
+					open (Trans, ">$Options->{BaseName}-trans-$GroupCount-$Transition.xyz");
+					push @{$Options->{TransFiles}}, "$Options->{BaseName}-trans-$GroupCount-$Transition.xyz";
+					
+					foreach $CurMono (@{$KorData->[$GroupCount]{Transitions}[$Transition]{Monopoles}}) {
+						$Coords = &GetXYZ ($CurMono, $Extrema);
+						if ($Coords->{z}< 0) { next }
+						
+						if ($Options->{mono}) {
+							if ($CurMono->{q} == 0) { $MonoColour = -1 } # colour black
+							if ($CurMono->{q} >  0) { $MonoColour =  1 } # colour blue
+							if ($CurMono->{q} <  0) { $MonoColour =  3 } # colour red
+							
+							print PLOT "set label \"\" at $Coords->{x}, $Coords->{y}, $Coords->{z} ",
+							           "point lt $MonoColour pt 7\n";
+						}
+						
+						if ($Options->{monocharge}) {
+							$Offset = 0.00;
+							
+							$LabelX = $Coords->{x};
+							$LabelY = $Coords->{y};
+							$LabelZ = $Coords->{z};
+							
+							$Label = $CurMono->{q};
+							
+							if    ($CurMono->{Atom} =~ m/^C/) { $MonoColour = 5 }
+							elsif ($CurMono->{Atom} =~ m/^N/) { $MonoColour = 4 }
+							elsif ($CurMono->{Atom} =~ m/^O/) { $MonoColour = 3 }
+							elsif ($CurMono->{Atom} =~ m/^H/) { $MonoColour = 2 }
+							
+							if ($Options->{round}) { $Label = sprintf ("%8.2f", $Label) }
+#							$Offset =  "offset -" . $Coords->{x} * $Options->{LabelPos} * 5 . ", " . $Coords->{y} * $Options->{LabelPos};
+							$Offset =  "";
+							print PLOT "set label \"$Label\" at $LabelX, $LabelY, $LabelZ $Position ",
+							           "font \"Helvetica, 9\" front textcolour lt $Options->{MonoColour} ",
+							           "point lt 0 pt 0 $Offset\n";
+#							print PLOT "set arrow from $Coords->{x}, $Coords->{y}, $Coords->{z}to $LabelX, $LabelY, $LabelZ nohead lt 6 lw 1\n";
+						}
+						
+					}
+					
+					close Trans;
+				}
+			} # of for $Transition (0 .. $#{$KorData->[$GroupCount]{Transitions}} )
+		} # of if ($Options->{mono})
+		
+		
+		if ($Options->{centres}) {
+			open (CoD, ">$Options->{BaseName}-CoD-$GroupCount.xyz");
+			push @{$Options->{CoDFiles}}, "$Options->{BaseName}-CoD-$GroupCount.xyz";
+			
+			for $Transition (0 .. $#{$KorData->[$GroupCount]{Transitions}} ) {
+				if ($Options->{VMU}) {
+					if ( ($Options->{trans} != -1) and ($Transition !~ m/[$Options->{trans}]/) ) { next }
+					$Coords = &GetXYZ ($KorData->[$GroupCount]{Transitions}[$Transition]{VMUCoD}, $Extrema);
+					print CoD "$Coords->{x}\t$Coords->{y}\t$Coords->{z}\n";
+					
+					$Offset = "offset $Options->{LabelPos}," . $Options->{LabelPos} * 2;
+					print PLOT "set label \"CoD $Transition\" at $Coords->{x}, $Coords->{y}, $Coords->{z} ",
+					           "center point lt 4 pt 2 $Offset\n";
+				}
+				
+				if ($Options->{VM}) {
+					$Coords = &GetXYZ ($KorData->[$GroupCount]{Transitions}[$Transition]{VMCoD}, $Extrema);
+					print CoD "$Coords->{x}\t$Coords->{y}\t$Coords->{z}\n";
+					
+					$Offset = "offset $Options->{LabelPos}," . $Options->{LabelPos} * 2;
+					print PLOT "set label \"CoD $Transition\" at $Coords->{x}, $Coords->{y}, $Coords->{z} ",
+					           "center point lt 4 pt 2 $Offset\n";
+				}
+			}
+			
+			close CoD;
+		}
+		
+		if ($Options->{balance}) {
+			
+			for $Transition (0 .. $#{$KorData->[$GroupCount]{Transitions}} ) {
+				if ( ($Options->{trans} != -1) && ($Transition !~ m/[$Options->{trans}]/) ) { next }
+				
+				open (Balance, ">$Options->{BaseName}-balance-$GroupCount-$Transition.xyz");
+				
+				push @{$Options->{BalanceFiles}}, "$Options->{BaseName}-balance-$GroupCount-$Transition.xyz";
+				
+				foreach (@{$KorData->[$GroupCount]{Transitions}[$Transition]{BalancePoints}}) {
+					$Coords = &GetXYZ ($_, $Extrema);
+					print Balance "$Coords->{x}\t$Coords->{y}\t$Coords->{z}\n";
+				}
+				
+				close Balance;
+			} # of for $Transition (0 .. $#{$KorData->[$GroupCount]{Transitions}} )
+			
+		} # of if ($Options->{balance})
+		
+	} # of for $GroupCount (0 .. $#{$KorData})
+	
+	
+	########################################################################################################################
+	# Plot the magnetic and electric moment vector after the matmac calculation
+	########################################################################################################################
+	
+	if ($Options->{EM}) {
+		for $Index (0 .. $#{$DbgData->{EM}} ) {
+			if ($Options->{trans} != -1) {
+				if ($DbgData->{Wavelength}[$Index] > $Options->{PiPiThres}) {
+					$Transition = 0; # it is an  n->Pi* Transition
+				}
+				else {
+					$Transition = 1; # it is an Pi->Pi* Transition
+				}
+				
+				if ($Transition !~ m/[$Options->{trans}]/) { next }
+				if ($Index !~ m/[$Options->{trans}]/) { next }
+			}
+			
+			$Coords = &GetXYZ ($DbgData->{EM}[$Index], $Extrema);
+			print PLOT "set arrow from 0, 0, 0 to $Coords->{x}, $Coords->{y}, $Coords->{z} filled lt ",
+			            $Options->{ColourEM}," lw 1\n";
+			$Offset =  "offset -" . $Options->{LabelPos} * 5 . ", $Options->{LabelPos}";
+			if ($Options->{veclabel}) {
+				print PLOT "set label \"EM ", $Index+1, "\" at $Coords->{x}, $Coords->{y}, $Coords->{z} ",
+				           "left textcolour lt ", $Options->{ColourEM}, " point lt 0 pt 0 $Offset\n";
+			}
+		}
+	}
+	
+	if ($Options->{EMU}) {
+		for $Index (0 .. $#{$DbgData->{EMU}} ) {
+			if ($Options->{trans} != -1) {
+				if ($DbgData->{Wavelength}[$Index] > $Options->{PiPiThres}) { # it is an  n->Pi* Transition
+					$Transition = 0;
+				}
+				else { # it is a Pi->Pi* Transition
+					$Transition = 1;
+				}
+				
+				if ($Transition !~ m/[$Options->{trans}]/) { next }
+#				if ($Index !~ m/[$Options->{trans}]/) { next }
+			}
+			
+			$Coords = &GetXYZ ($DbgData->{EMU}[$Index], $Extrema);
+			print PLOT "set arrow from 0, 0, 0 to $Coords->{x}, $Coords->{y}, $Coords->{z} filled lt ",
+			            $Options->{ColourEMU}," lw 1\n";
+			$Offset =  "offset -" . $Options->{LabelPos} * 5 . ", $Options->{LabelPos}";
+			# mind, that $Index+1 is printed to be consistent with the matmac output (since Fortran starts counting at 1)
+			if ($Options->{veclabel}) {
+				print PLOT "set label \"EMU ", $Index+1, "\" at $Coords->{x}, $Coords->{y}, $Coords->{z} ",
+				           "left textcolour lt ", $Options->{ColourEMU}, " point lt 0 pt 0 $Offset\n";
+			}
+		}
+	}
+	
+	
+	########################################################################################################################
+	# Plot the magnetic and electric moment vector of the ab initio calculation
+	########################################################################################################################
+	
+	if ( ($Options->{EMAI}) and (exists $AbiData->{EM}) ) {
+		for $Index (0 .. $#{$AbiData->{EM}} ) {
+			if ($Options->{trans} != -1) {
+				if ($AbiData->{Wavelength}[$Index] > $Options->{PiPiThres}) {
+					$Transition = 0; # it is an  n->Pi* Transition
+				}
+				else {
+					$Transition = 1; # it is an Pi->Pi* Transition
+				}
+#					if ($Index !~ m/[$Options->{trans}]/) { next }
+#					if ($Transition !~ m/[$Options->{trans}]/) { next }
+			}
+			
+			$Coords = &GetXYZ ($AbiData->{EM}[$Index], $Extrema);
+			print PLOT "set arrow from 0, 0, 0 to $Coords->{x}, $Coords->{y}, $Coords->{z} filled lt ",
+			            $Options->{ColourEMAI}," lw 1\n";
+			$Offset =  "offset -" . $Options->{LabelPos} * 5 . ", $Options->{LabelPos}";
+			# mind, that $Index+1 is printed to be consistent with the matmac output (since Fortran starts counting at 1)
+			if ($Options->{veclabel}) {
+				print PLOT "set label \"EMAI ", $Index+1, "\" at $Coords->{x}, $Coords->{y}, $Coords->{z} ",
+				           "left textcolour lt ", $Options->{ColourEMAI}, " point lt 0 pt 0 $Offset\n";
+			}
+		}
+	}
+	
+	if ( ($Options->{EMUAI}) and (exists $AbiData->{EMU}) ) {
+		for $Index (0 .. $#{$AbiData->{EMU}} ) {
+			if ($Options->{trans} != -1) {
+				if ($AbiData->{Wavelength}[$Index] > $Options->{PiPiThres}) {
+					$Transition = 0; # it is an  n->Pi* Transition
+				}
+				else {
+					$Transition = 1; # it is an Pi->Pi* Transition
+				}
+				if ($Transition !~ m/[$Options->{trans}]/) { next }
+#					if ($Index !~ m/[$Options->{trans}]/) { next }
+			}
+			
+			$Coords = &GetXYZ ($AbiData->{EMU}[$Index], $Extrema);
+			print PLOT "set arrow from 0, 0, 0 to $Coords->{x}, $Coords->{y}, $Coords->{z} filled lt ",
+			            $Options->{ColourEMUAI}," lw 1\n";
+			$Offset =  "offset -" . $Options->{LabelPos} * 5 . ", $Options->{LabelPos}";
+			# mind, that $Index+1 is printed to be consistent with the matmac output (since Fortran starts counting at 1)
+			
+			if ($Options->{veclabel}) {
+				print PLOT "set label \"EMUAI ", $Index+1, "\" at $Coords->{x}, $Coords->{y}, $Coords->{z} left textcolour lt ",
+				            $Options->{ColourEMUAI}, " point lt 0 pt 0 $Offset\n";
+			}
+		}
+	}
+	
+	if ($Options->{PolVec}) {
+		# The polarization can either be read from the .pol or from the .vec file (the .vec contains the
+		# numbers with a higher accuracy for the ldrun script). If the .vec file is present, its data is
+		# preferred, otherwise the .pol data is taken (if available)
+		
+		if ($VecData) {
+			for $Index (0 .. $#{$VecData}) {
+				# if ($VecData->[$Index]{Wavelength} < $Options->{PiPiThres}) { next }
+				# if ($VecData->[$Index]{Total} < 1) { next }
+				# if (&Norm ($VecData->[$Index]{VMU}) < 0.3) { next }
+				
+				$Coords = &GetXYZ ($VecData->[$Index], $Extrema);
+				
+				if ($VecData->[$Index]{Wavelength} < $Options->{PiPiThres}) {
+					print PLOT "set arrow from 0, 0, 0 to $Coords->{x}, $Coords->{y}, $Coords->{z} filled lt ",
+									$Options->{ColourPol1}, " lw 1\n";
+				}
+				else {
+					print PLOT "set arrow from 0, 0, 0 to $Coords->{x}, $Coords->{y}, $Coords->{z} filled lt ",
+									$Options->{ColourPol2}, " lw 1\n";
+				}
+			}
+		}
+		elsif ($PolData) {
+			for $Index (0 .. $#{$PolData}) {
+				# if ($PolData->[$Index]{Wavelength} < $Options->{PiPiThres}) { next }
+				# if ($PolData->[$Index]{Total} < 1) { next }
+				# if (&Norm ($PolData->[$Index]{VMU}) < 0.3) { next }
+				
+				$Coords = &GetXYZ ($PolData->[$Index]{VMU}, $Extrema);
+				
+				if ($PolData->[$Index]{Wavelength} < $Options->{PiPiThres}) {
+					print PLOT "set arrow from 0, 0, 0 to $Coords->{x}, $Coords->{y}, $Coords->{z} filled lt ",
+									$Options->{ColourPol1}, " lw 1\n";
+				}
+				else {
+					print PLOT "set arrow from 0, 0, 0 to $Coords->{x}, $Coords->{y}, $Coords->{z} filled lt ",
+									$Options->{ColourPol2}, " lw 1\n";
+				}
+			}
+		}
+	}
+	
+	########################################################################################################################
+	
+	close ATOMS;
+	
+	&CleanExtrema ($Extrema);
+	
+	########################################################################################################################
+	# Set all the plot-specific stuff for gnuplot (some of it depends on the extrema, that's why it is not set earlier)
+	########################################################################################################################
+	
+	if (not $Options->{KeepGnuplotAlive}) {
+		print PLOT "set encoding iso_8859_1\n";
+		
+		if ($Options->{gif}) {
+			print PLOT "set terminal gif enhanced large size $Options->{res} crop\n";
+		}
+		else {
+			print PLOT "set terminal postscript enhanced colour solid\n";
+		}
+		
+		print PLOT "set output \"$Options->{o}\"\n";  # specify the output file
+	}
+	
+	print PLOT "set zeroaxis ls 7\n";
+	
+	if ($Options->{xtics}) {
+		print PLOT "set xtics border nomirror norotate $Options->{xtics}\n";
+		print PLOT "set mxtics 2\n";
+	}
+	else {
+		# print PLOT "set xtics border nomirror norotate ", ($Extrema->{MaxX} - $Extrema->{MinX})/5, "\n";
+		print PLOT "set xtics border nomirror norotate\n";
+		print PLOT "set mxtics 2\n";
+	}
+	
+	if ($Options->{ytics}) {
+		print PLOT "set ytics border nomirror norotate $Options->{ytics}\n";
+		print PLOT "set mytics 2\n";
+	}
+	else {
+#		print PLOT "set ytics border nomirror norotate ", ($Extrema->{MaxY} - $Extrema->{MinY})/5, "\n";
+		print PLOT "set ytics border nomirror norotate\n";
+		print PLOT "set mytics 2\n";
+	}
+	
+	if (defined $Options->{t}) {
+		print PLOT "set title \"$Options->{t}\"\n";
+	}
+	
+	print PLOT "set xlabel \"$Options->{xlabel}\"\n";
+	print PLOT "set ylabel \"$Options->{ylabel}\"\n";
+	print PLOT "set zlabel \"$Options->{zlabel}\"\n";
+	
+	if ($Options->{zlabels}) {
+		if ($Options->{ztics}) {
+			print PLOT "set ztics border nomirror norotate $Options->{ztics}\n";
+			print PLOT "set mztics 2\n";
+		}
+		else {
+			print PLOT "set ztics border nomirror norotate ", ($Extrema->{MaxZ} - $Extrema->{MinZ})/10, "\n";
+			print PLOT "set mztics 2\n";
+		}
+		
+		print PLOT "set zlabel \"z / \305\"\n";
+	}
+	else {
+		print PLOT "set noztics\n"
+	}
+	
+	print PLOT "\n";
+	print PLOT "set ticslevel 0\n";
+	
+	if ($Options->{square}) {
+		print PLOT "set size square $Options->{size}\n";
+	}
+	else {
+		print PLOT "set size $Options->{size}\n";
+	}
+	
+	if ($Options->{t}) {
+		print PLOT "set title \"$Options->{BaseName} - $Options->{t}\"\n";
+	}
+	else {
+		print PLOT "set title \"$Options->{BaseName}\"\n";
+	}
+	
+	print PLOT "set view $Options->{v}\n";
+	print PLOT "set grid\n";  # show a grid (dotted lines at every major tic)
+	
+	if ($Options->{nokey}) {
+		print PLOT "set nokey\n";
+	}
+	else {
+		print PLOT "set key right top Left reverse samplen 2 spacing 1.25 title \"\" nobox\n";
+	}
+	
+	print PLOT "\n";
+	
+	
+	########################################################################################################################
+	# set the ranges of the axes
+	########################################################################################################################
+	
+	if ($Options->{GlobalMax}) {
+		if		( ($Extrema->{MaxX} >= $Extrema->{MaxY}) and ($Extrema->{MaxX} >= $Extrema->{MaxZ}) ) {
+			$Extrema->{MaxY} = $Extrema->{MaxX};
+			$Extrema->{MaxZ} = $Extrema->{MaxX};
+		}
+		elsif ( ($Extrema->{MaxY} >= $Extrema->{MaxX}) and ($Extrema->{MaxY} >= $Extrema->{MaxZ}) ) {
+			$Extrema->{MaxX} = $Extrema->{MaxY};
+			$Extrema->{MaxZ} = $Extrema->{MaxY};
+		}
+		else {
+			$Extrema->{MaxX} = $Extrema->{MaxZ};
+			$Extrema->{MaxY} = $Extrema->{MaxZ};
+		}
+		
+		if		( ($Extrema->{MinX} <= $Extrema->{MinY}) and ($Extrema->{MinX} <= $Extrema->{MinZ}) ) {
+			$Extrema->{MinY} = $Extrema->{MinX};
+			$Extrema->{MinZ} = $Extrema->{MinX};
+		}
+		elsif ( ($Extrema->{MinY} <= $Extrema->{MinX}) and ($Extrema->{MinY} <= $Extrema->{MinZ}) ) {
+			$Extrema->{MinX} = $Extrema->{MinY};
+			$Extrema->{MinZ} = $Extrema->{MinY};
+		}
+		else {
+			$Extrema->{MinX} = $Extrema->{MinZ};
+			$Extrema->{MinY} = $Extrema->{MinZ};
+		}
+	}
+	
+	if ($Options->{range}) {
+		foreach $i ( qw/x y z/ ) {
+			# if x, y and/or z are not given, the respective value is set
+			# to the value given via range
+			# i.e. -range 3 -xrange 6 would result in xrange and yrange 3 and xrange 6
+			if (not $Options->{$i}) { $Options->{$i} = $Options->{range} }
+		}
+	}
+	
+	foreach $i ( qw/x y z/ ) {
+		my $Range = $i . "range";  # to create hashkeys xrange, yrange, zrange
+		
+		if ($Options->{$i}) {
+			if ($Options->{$i} =~ m/:/) {
+				print PLOT "set $Range [$Options->{$i}]\n";
+			}
+			else {
+				print PLOT "set $Range [-$Options->{$i}:$Options->{$i}]\n";
+			}
+		}
+		else {
+			my $Coord = uc $i;   # uppercase the coordinate to create the hashkeys below => MinX, MinY, MinZ
+			print PLOT "set $Range [" . $Extrema->{"Min$Coord"} . ":" . $Extrema->{"Max$Coord"} . "]\n";
+		}
+	}
+	
+	########################################################################################################################
+	
+	print PLOT "show label\n";
+	
+	open (DUMMY, ">$Options->{BaseName}-dummy.xyz");
+	print DUMMY "0\t0\t0\n"; # dummy atom to avoid an error message, if only vectors should be printed (splot MUST be executed for gnuplot to be started)
+	close DUMMY;
+	
+	print PLOT "splot \"$Options->{BaseName}-dummy.xyz\" with points lt 0 pt 0 ";
+	
+	if ($PlotAtoms) { print PLOT ", \"$Options->{BaseName}-atoms.xyz\" title \"atoms\" with points lt 3 pt 7" }
+	
+	$i = 1;
+	foreach $File ( @{$Options->{TransFiles}} ) {
+		$CurBaseName = $File;
+		$CurBaseName =~ s/\.xyz//;
+		
+		print PLOT ", \"$File\" title \"$CurBaseName\" with points $i";
+		++$i;
+	}
+	
+	$i = 1;
+	foreach $File ( @{$Options->{BalanceFiles}} ) {
+		$CurBaseName = $File;
+		$CurBaseName =~ s/\.xyz//;
+		
+		print PLOT ", \"$File\" title \"$CurBaseName\" with points $i";
+		++$i;
+	}
+	
+	foreach $File ( @{$Options->{CoDFiles}} ) {
+		$CurBaseName = $File;
+		$CurBaseName =~ s/\.xyz//;
+		
+		print PLOT ", \"$File\" title \"$CurBaseName\" with points $i";
+		++$i;
+	}
+	
+	print PLOT "\n\n";
+	
+	if ($Options->{KeepGnuplotAlive}) { print PLOT "\npause -1\n" }
+	print PLOT "\n";
+	close PLOT;
+} # of sub CreateCommandFile
+
+
+sub MoveOrigin { # moves the first vector about the coordinates of the second one
+	my $Vector1 = shift;
+	my $Coords  = shift;
+	my $Extrema = shift;
+	
+	$Coords->{x} = $Coords->{x} + $Vector1->{x};
+	$Coords->{y} = $Coords->{y} + $Vector1->{y};
+	$Coords->{z} = $Coords->{z} + $Vector1->{z};
+	
+	&CheckExtrema ($Coords, $Extrema);
+} # of sub MoveOrigin
+
+
+sub GetXYZ { # sets the global xyz variables
+	my $Hash = shift;
+	my $Extrema = shift;
+	
+	my $Coords = {
+		x => $Hash->{x},
+		y => $Hash->{y},
+		z => $Hash->{z},
+	};
+
+	&CheckExtrema ($Coords, $Extrema) ;
+	return $Coords;
+} # of sub GetXYZ
+
+
+sub CheckExtrema { # sets the extreme values
+	my $Coords  = shift;
+	my $Extrema = shift;
+	
+	if ($Extrema) {	
+		if ($Coords->{x} < $Extrema->{MinX}) { $Extrema->{MinX} = $Coords->{x} }
+		if ($Coords->{x} > $Extrema->{MaxX}) { $Extrema->{MaxX} = $Coords->{x} }
+		
+		if ($Coords->{y} < $Extrema->{MinY}) { $Extrema->{MinY} = $Coords->{y} }
+		if ($Coords->{y} > $Extrema->{MaxY}) { $Extrema->{MaxY} = $Coords->{y} }
+		
+		if ($Coords->{z} < $Extrema->{MinZ}) { $Extrema->{MinZ} = $Coords->{z} }
+		if ($Coords->{z} > $Extrema->{MaxZ}) { $Extrema->{MaxZ} = $Coords->{z} }
+	}
+} # of sub CheckExtrema
+
+
+sub CleanExtrema { # sets the determined extrema to integers
+	my $Extrema = shift;
+	my ($xRange, $yRange, $zRange);
+	
+	$xRange = $Extrema->{MaxX} - $Extrema->{MinX};
+	$yRange = $Extrema->{MaxY} - $Extrema->{MinY};
+	$zRange = $Extrema->{MaxZ} - $Extrema->{MinZ};
+	
+	# decrease the minimum about 10% of the range
+	$Extrema->{MinX} = $Extrema->{MinX} - ($xRange * 0.1);
+	$Extrema->{MinY} = $Extrema->{MinY} - ($yRange * 0.1);
+	$Extrema->{MinZ} = $Extrema->{MinZ} - ($zRange * 0.1);
+	
+	# increase the maximum about 10% of the range
+	$Extrema->{MaxX} = $Extrema->{MaxX} + ($xRange * 0.1);
+	$Extrema->{MaxY} = $Extrema->{MaxY} + ($yRange * 0.1);
+	$Extrema->{MaxZ} = $Extrema->{MaxZ} + ($zRange * 0.1);
+	
+	foreach ( qw/MinX MinY MinZ/ ) { $Extrema->{$_} = floor ($Extrema->{$_}) }
+	foreach ( qw/MaxX MaxY MaxZ/ ) { $Extrema->{$_} = ceil ($Extrema->{$_})  }
+} # of sub CleanExtrema
+

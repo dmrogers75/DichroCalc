@@ -1,0 +1,941 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    matrix-analysis
+#
+# Function:   Plots the Hamiltonian matrix of a calculation as barchart and calculates the average
+#             and standard deviation of each off-diagonal element
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 4650 $, $Date: 2009-07-27 22:04:34 +0100 (Mon, 27 Jul 2009) $
+#
+# Date:       February 2008
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use ReadMatmac;                      # to read matmac in- and output files
+use VectorMath;                      # for vector and matrix calculations
+use GetParameters;                   # to handle command line parameters
+use ParsePDB;                        # to parse PDB files
+
+###################################################################################################
+# Configuration Parameters
+####################################################################################################
+
+my $PDFCONVERTER = "ps2pdf";   # the program used to create a PDF from the PS
+
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {     # create an anonymous hash
+	abs      => "switch",
+	dbg      => "switch",
+	plot     => "switch",
+	nolabels => "switch",
+	p        => "switch",
+	t        => "string",
+	w        => "integer",
+	filter   => "switch",
+	min      => "real",
+	maxdist  => "real",
+	avg      => "switch",
+	pdb      => "switch",
+	pdf      => "switch",
+	dist     => "switch",
+	log      => "switch",
+	stat     => "switch",
+};
+
+my $Options = {       # create an anonymous hash
+	w        => "30",
+	min      => "10",
+};
+
+my $Help = "\n" .
+"Usage:   matrix-analysis file1.mat [file2.mat] [...] [options]\n" .
+"\n" .
+"   -abs         use the absolute values\n" .
+"   -plot        plot the interactions of each file as bar chart\n" .
+"   -nolabels    do not use the determined transition labels but e.g. c1r4 for\n" .
+"                column 1, row 4 in the matrix\n" .
+"   -p           plot to X11 and not into a postscript file (use only for single\n" .
+"                files, not hundreds...)\n" .
+"   -w           the \"width\" of the plots, i.e. the maximum number of bars per\n" .
+"                bar chart, default $Options->{w}\n" .
+"   -dbg         prints some debug information to verify several assignments\n" .
+"   -filter      filter out interactions smaller than $Options->{min}\n" .
+"   -pdb         export a PDB file containing only the residues showing the largest\n" .
+"                interactions (only with -plot and -filter)\n" .
+"   -pdf         create a PDF file from the .ps (may require configuration of the\n" .
+"                conversion program)\n" .
+"   -min         the interaction value which is regarded as \"weak\"\n" .
+"   -log         save the output to a logfile\n" .
+"   -stat        output the statistics to a .stat file, which is easy to read by\n" .
+"                other scripts\n" .
+"   -dist        output the distance of the groups\n" .
+"   -maxdist     the maximum (greatest) distance reported in the .stat file\n" .
+"   -avg         calculate the averages over all processed files (only for identical\n" .
+"                proteins with different conformations!)\n" .
+"   -t           define a title for the average spectrum\n" .
+"\n";
+
+####################################################################################################
+
+my ($InFile, $Dimension, $FileCount, $Col, $Row, $Labels, $Value, $CurIndex, $LOGFILE, $i);
+my $Averages = {};
+
+GetParameters ($Parameters, $Options, $Help);
+
+if (not $Options->{rest}) {
+	print STDERR "\nERROR: No file given to process!\n\n";
+	exit 1;
+}
+
+$FileCount = scalar @{$Options->{rest}}; # the number of files
+
+foreach $InFile ( @{$Options->{rest}} ) {
+	#$InFile = shift @{$Options->{rest}};
+	
+	my $MatData  = {}; # create an anonymous hash
+	my $StfData  = {}; # create an anonymous hash
+	my $FmtData  = []; # create an anonymous hash
+	my $Data     = {}; # create an anonymous hash
+	my $Sequence = []; # create an anonymous array
+	my $Groups   = []; # create an anonymous array
+	
+	# remove the most common matmac extensions to get the base name
+	$InFile =~ s/\.(pdb|stf|fmt|mat|vec|pol|dbg)$//;
+	
+	if ($Options->{log}) {
+		# create a log file name and reset the file if it was there before
+		$LOGFILE = "$InFile.log";
+		open LOG, ">$LOGFILE" or die "ERROR: Could not create $LOGFILE: $!";
+		close LOG;
+	}
+	
+	for my $Ext ( qw/mat stf fmt/ ) {
+		if (not -f "$InFile.$Ext") {
+			print STDERR "ERROR: $InFile.$Ext not found.\n\n";
+			exit 2;
+		}
+	}
+	
+	if (not $Options->{log}) { print "\n" }
+	print "Processing $InFile...\n";
+	if (not $Options->{log}) { print "\n" }
+	
+	# read the Hamiltonian matrix, it's sorted $Matrix->[Row][Column]
+	ReadMatFile ($InFile, $MatData);
+	ReadStfFile ($InFile, $StfData);
+	ReadFmtFile ($InFile, $FmtData);   # needed to determine the distances
+	
+	TransitionSequence ($InFile, $StfData, $Sequence, $Groups);
+	
+	if (not $StfData) {
+		print STDERR "\nERROR: $InFile.stf could not be read'\n";
+		exit 4;
+	}
+	
+	if (not $MatData) {
+		print STDERR "\nERROR: $InFile.mat could not be read'\n";
+		exit 5;
+	}
+	
+	$Dimension = $#{$MatData->{Matrix}}; # count the rows (which is the same as cols!)
+	$Data->{Dimension} = $Dimension;     # used in sub Distances
+	
+	# $Sequence now contains the sequence of the transitions in the Hamiltonian matrix (like e.g. its axis
+	# labels if the matrix was plotted). For the interaction pattern, each label has to be combined with
+	# every other one. The following two loops run over the lower triangle under the matrix diagonal
+	for $Col ( 0 .. $Dimension-1 ) {  # -1 because the last col (if $Col is $Dimension) in the last row is diagonal
+		for $Row ( $Col+1 .. $Dimension) {  # 1 because first row (0) is diagonal
+			push @{$Labels}, $Sequence->[$Col] . " - " . $Sequence->[$Row];
+		}
+	}
+	
+	$CurIndex = 0;
+	$Data->{Maximum}  = 0;
+	$Data->{ResidueNumber} = $StfData->{Factor}; # for sub ExportPDB
+	
+	# The lower left triangle of the matrix is read, leaving out the diagonal. For the correct assignment of the
+	# labels, it is vital that the order is followed. The labels in the array are sorted 1st col, all rows, 2nd
+	# col, all rows, etc. which is the same way the two loops go through it
+	for $Col ( 0 .. $Dimension-1 ) {  # -1 because the last col (if $Col is $Dimension) in the last row is diagonal
+		for $Row ( $Col+1 .. $Dimension) {  # 1 because first row (0) is diagonal
+			# use the absolute value if requested
+			if ($Options->{abs}) {
+				$MatData->{Matrix}[$Row][$Col] = abs $MatData->{Matrix}[$Row][$Col];
+			}
+			
+			# check whether this value is the biggest till now (to set the y maxima identical like -Max:Max)
+			if (abs $MatData->{Matrix}[$Row][$Col] > $Data->{Maximum}) {
+				$Data->{Maximum} = abs $MatData->{Matrix}[$Row][$Col];
+			}
+			
+			# skip side chain / side chain interactions since they're all zero
+			# if ($Dimension == 7 and $Col > 3) {
+			# 	++$CurIndex;
+			# 	next;
+			# }
+			
+			# add the current value to the Data array
+			push @{$Data->{Values}}, $MatData->{Matrix}[$Row][$Col];
+			
+			# add the label to the data array, either a given one (if existing) or a Col-Row combination
+			if ($Labels->[$CurIndex] and not $Options->{nolabels}) { push @{$Data->{Labels}}, $Labels->[$CurIndex] }
+			                                                  else { push @{$Data->{Labels}}, "$Col-$Row"          }
+			
+			if ($Options->{avg}) {
+				# initialize the current average value if it hasn't been done before to avoid an
+				# uninitialized value warning in the following command
+				if (not defined $Averages->{Values}[$CurIndex]) { $Averages->{Values}[$CurIndex] = 0 }
+				
+				# add the current value to the respective average value
+				$Averages->{Values}[$CurIndex] = $Averages->{Values}[$CurIndex] + $MatData->{Matrix}[$Row][$Col];
+				
+				# create the label in the averages array
+				if ($Labels->[$CurIndex] and not $Options->{nolabels}) { $Averages->{Labels}[$CurIndex] = $Labels->[$CurIndex] }
+				                                                  else { $Averages->{Labels}[$CurIndex] = "c$Col-r$Row"        }
+			}
+			
+			++$CurIndex;
+		}
+	} # of for $Col ( 0 .. $Dimension-1 )
+	
+	# increase the maximum value a little bit
+	$Data->{Maximum} = $Data->{Maximum} * 1.1;
+	$Data->{Title}   = "Interactions of $InFile";
+	$Data->{xlabel}  = "matrix elements";
+	$Data->{ylabel}  = "value";
+	$Data->{InteractionsTotal} = scalar @{$Data->{Values}};
+	
+	
+	# if the distances of the groups are requested, calculated them and add them to the $Data hash
+	if ($Options->{dist}) { &Distances ($Data, $Groups, $FmtData) }
+	
+	# if a plot was requested, plot the current bar chart
+	if ($Options->{plot}) { &Plot ($InFile, $Data) }
+	
+	# if an average plot was requested, save the current values for the calculation later on
+	if ($Options->{avg}) { push @{$Averages->{Single}}, $Data }
+	
+	# if small interactions shall be filtered out then a PDB can be exported containing only the influential residues
+	if ($Options->{pdb}) { &ExportPDB ($InFile, $Data) }
+	
+	# if no PDB and no plot is requested, the filter routine wasn't executed yet, so it's done now to get the statistics
+	if ($Options->{filter} and (not $Options->{pdb} and not $Options->{plot})) { &FilterData ($InFile, $Data) }
+	
+	if (not $Options->{log}) { print "\n" }
+	
+	if ($Options->{stat}) {
+		open STAT, ">$InFile.stat" or die "\nERROR: Could not create $InFile.stat: $!";
+		print STAT "File\t$InFile\n";
+		print STAT "Total interactions\t$Data->{InteractionsTotal}\n";
+		print STAT "Maximum interaction\t$Data->{Maximum}\n";
+		print STAT "Number of residues\t$Data->{ResidueNumber}\n";
+		
+		if ($Options->{filter}) {
+			print STAT "Interaction regarded as \'weak\'\t$Options->{min}\n";
+			print STAT "Percentage of \'weak\' to maximum interaction\t$Data->{Statistics}{IntensityPercent}\n";
+			print STAT "Interations filtered out\t$Data->{Statistics}{InteractionsFiltered}\n";
+			print STAT "Percentage of filtered out residues\t$Data->{Statistics}{InteractionsPercent}\n";
+			print STAT "Residues with weak interactions\t$Data->{Statistics}{ResiduesWeak}\n";
+			print STAT "Residues with strong interactions\t$Data->{Statistics}{ResiduesStrong}\n";
+			print STAT "Gaps after removing weak residues\t$Data->{Statistics}{Gaps}\n";
+		}
+		
+		print STAT "\nBEGIN_DATA\n";
+		print STAT "Res1\tGroup1\tTrans1\tAssignments\tRes2\tGroup2\tTrans2\tAssignments\tDistance\tInteraction\n";
+		
+		my ($Residue1, $Residue2, $Group1, $Group2, $Trans1, $Trans2, $Assignments1, $Assignments2, $Index, $Label);
+		
+		for $Index ( 0 .. $#{$Data->{Values}} ) {
+			# mind the subtle difference between 'not defined' = 'undef' and 'not' being 'false' for an empty string
+			if (not $Data->{Labels}[$Index]) { next }
+			if (not defined $Data->{Values}[$Index]) { next }
+			
+			$Label = $Data->{Labels}[$Index];
+			
+			# cut out the residue numbers of the interacting groups and the transition type
+			($Residue1, $Residue2) = split " - ", $Label;
+			($Group1, $Group2)     = split " - ", $Label;
+			($Trans1, $Trans2)     = split " - ", $Label;
+			
+			if (not $Group1 or not $Group2) { next }
+			
+			$Residue1 =~ s/^R(\d+)-G(\d+)-(.+)$/$1/;
+			$Residue2 =~ s/^R(\d+)-G(\d+)-(.+)$/$1/;
+			$Group1   =~ s/^R(\d+)-G(\d+)-(.+)$/$2/;
+			$Group2   =~ s/^R(\d+)-G(\d+)-(.+)$/$2/;
+			$Trans1   =~ s/^R(\d+)-G(\d+)-(.+)$/$3/;
+			$Trans2   =~ s/^R(\d+)-G(\d+)-(.+)$/$3/;
+			
+			$Assignments1 = join " ", @{$StfData->{Assignments}[$Group1-1]};
+			$Assignments2 = join " ", @{$StfData->{Assignments}[$Group2-1]};
+			
+			for $i ( $Residue1, $Residue2, $Group1, $Group2, $Trans1, $Trans2, $Assignments1, $Assignments2, $Data->{Distances}[$Index], $Data->{Values}[$Index] ) {
+				if (not defined $i) { $i = "" }
+			}
+			
+			if ($Data->{Distances}[$Index] and $Options->{maxdist}) {
+				if ($Data->{Distances}[$Index] > $Options->{maxdist}) { next }
+			}
+			
+			print STAT "$Residue1\t$Group1\t$Trans1\t$Assignments1\t$Residue2\t$Group2\t$Trans2\t$Assignments2\t$Data->{Distances}[$Index]\t$Data->{Values}[$Index]\n";
+		}
+		
+		print STAT "END_DATA\n";
+		close STAT;	
+	}
+} # of foreach $InFile
+
+if ($Options->{avg}) { &CalculateAverages ($Averages) }
+
+
+####################################################################################################
+####################################################################################################
+
+
+sub CalculateAverages {
+	my $Averages = shift;
+	
+	# divide every average value by the number of files
+	foreach $Value ( 0 .. $#{$Averages->{Values}}) {
+		$Averages->{Values}[$Value] = sprintf "%.3f", $Averages->{Values}[$Value] / $FileCount;
+	}
+	
+	####################################################################################################
+	# Calculate the standard deviation
+	####################################################################################################
+	
+	
+	# Deviation = sqrt( 1/N sum( (x_i - x_avg)^2  ) )
+	
+	my ($Deviation, $File, $Index, $Sum);
+	
+	foreach $Index ( 0 .. $#{$Averages->{Values}} ) {
+		$Sum = 0;
+		
+		# for each index of the average values run over all single calculation values with the same
+		# index and calculate the standard deviation
+		foreach $File ( @{$Averages->{Single}} ) {
+			#             value of the current file          average value
+			$Sum = $Sum + ($File->{Values}[$Index] - $Averages->{Values}[$Index])**2;
+		}
+		
+		$Deviation = sqrt( 1/$FileCount * $Sum );
+		
+		$Averages->{Deviations}[$Index] = sprintf "%.2f", $Deviation;
+	}
+	
+	
+	####################################################################################################
+	# Plot the average interactions
+	####################################################################################################
+	
+	if ($Options->{plot}) {
+		$Averages->{Maximum} = 0;
+		
+		# determine the maximum value for the yrange
+		foreach $Value ( @{$Averages->{Values}} ) {
+			if (abs $Value > $Averages->{Maximum}) { $Averages->{Maximum} = abs $Value }
+		}
+		
+		$Averages->{Title}  = "Average interactions and standard deviations";
+		if ($Options->{t}) { $Averages->{Title} = $Averages->{Title} . " of $Options->{t}" }
+		
+		# increase the maximum value a little bit
+		$Averages->{Maximum} = $Averages->{Maximum} * 1.1;
+		$Averages->{xlabel} = "matrix elements";
+		$Averages->{ylabel} = "average";
+		&Plot ("averages", $Averages);
+	}
+
+	####################################################################################################
+	# Print out the average values
+	####################################################################################################
+	
+	$CurIndex = 0;
+	my $Lines = [];
+	
+	# The following is a tiresome routine to re-sort the Col-Row way of Perl in a Row-Col fashion
+	# which is needed to print the matrix.
+	
+	# First turn the 1-dim array back into a 2-dim one and recreate the way it was (the 1-dim array
+	# is needed to plot and couln't be avoided).
+	for $Col (0 .. $Dimension-1) {
+		for $Row ($Col+1 .. $Dimension) {
+			$Lines->[$Row][$Col] = $Averages->{Values}[$CurIndex];
+			
+			if ($Options->{dbg}) {
+				if (defined $Averages->{Labels}[$CurIndex]) {
+					# debug line to check the correct assignment of label and value
+					printf "%20s %10.1f\n", $Averages->{Labels}[$CurIndex], $Averages->{Values}[$CurIndex];
+				}
+			}
+			
+			++$CurIndex;
+		}
+	}
+	
+	# print "\nAverage values of the matrix off-diagonal elements:\n\n";
+	 
+	# Now loop over the 2-dim array row by row and print the values which are actually defined
+	#  for $Row (1 .. $Dimension) {
+	#  	for $Col (0 .. $Dimension-1) {
+	#  		if (defined $Lines->[$Row][$Col]) { printf "%12.3f", $Lines->[$Row][$Col] }
+	#  	}
+	#  	print "\n";
+	#  }
+	
+	if (not $Options->{log}) { print "\n" }
+} # of sub CalculateAverages
+
+
+sub FilterData { # filters out small interactions
+	my $BaseName = shift;
+	my $OrgData  = shift;
+	my ($InteractionsFiltered, $InteractionsTotal);
+	
+	# Create a hash reference for the copy of the original data. The original data must not be changed if
+	# small values are filtered out. Due to the way references are handled, it would also change it in the
+	# main program and cause trouble later on when the averages are calculated.
+	my $Data = {};
+	
+	$Data->{Statistics}{InteractionsFiltered} = 0;
+	$Data->{Statistics}{InteractionsTotal} = 0;
+	$Data->{Statistics}{InteractionsPercent} = 0;
+	$Data->{Statistics}{IntensityPercent} = 0;
+	$Data->{Statistics}{ResidueNumber} = 0;
+	$Data->{Statistics}{ResiduesWeak} = 0;
+	$Data->{Statistics}{ResiduesStrong} = 0;
+	$Data->{Statistics}{Gaps} = 0;
+
+	$InteractionsFiltered = 0;
+	$InteractionsTotal = scalar @{$OrgData->{Values}};
+	
+	if (not $Options->{filter}) {
+		$Data = $OrgData;
+	}
+	else {
+		$Data->{Statistics}{Maximum}           = $Data->{Maximum};
+		$Data->{Statistics}{InteractionsTotal} = $InteractionsTotal;
+		$Data->{Statistics}{ResidueNumber}     = $OrgData->{ResidueNumber};
+		
+		my $Value = 0;
+		
+		while ($Value <= $#{$OrgData->{Values}}) {
+			if (not defined $OrgData->{Values}[$Value]) {
+			}
+			elsif (abs ($OrgData->{Values}[$Value]) < $Options->{min}) {
+				++$InteractionsFiltered;
+			}
+			else {
+				# if the current value is larger than $Options->{min}, move on to the next item
+				push @{$Data->{Values}}, $OrgData->{Values}[$Value];
+				push @{$Data->{Labels}}, $OrgData->{Labels}[$Value];
+				if (defined $OrgData->{Deviations}) { push @{$Data->{Deviations}}, $OrgData->{Deviations}[$Value] }
+				if (defined $OrgData->{Distances})  { push @{$Data->{Distances}},  $OrgData->{Distances}[$Value]  }
+			}
+			
+			++$Value;
+		}
+		
+		$Data->{Title}   = $OrgData->{Title};
+		$Data->{Maximum} = $OrgData->{Maximum};
+		$Data->{xlabel}  = $OrgData->{xlabel};
+		$Data->{ylabel}  = $OrgData->{ylabel};
+		
+		my $InteractionsPercent = sprintf "%.2f", $InteractionsFiltered/$InteractionsTotal * 100;
+		my $IntensityPercent    = sprintf "%.3f", $Options->{min}/$Data->{Maximum}*100;
+		
+		$Data->{Statistics}{InteractionsFiltered} = $InteractionsFiltered;
+		$Data->{Statistics}{InteractionsPercent}  = $InteractionsPercent;
+		$Data->{Statistics}{IntensityPercent}     = $IntensityPercent;
+		
+		# to have the statistics available in the original hash, the reference has to be added there
+		$OrgData->{Statistics} = $Data->{Statistics};
+		
+		&LogEntry ("$InteractionsFiltered interactions of $InteractionsTotal ($InteractionsPercent%) were smaller than $Options->{min}.\n");
+		&LogEntry (sprintf "Maximum interaction was %.3f, $Options->{min} is $IntensityPercent%% of that.\n", $Data->{Maximum});
+	}
+	
+	# the following is the preparation for filtering out the residues, what cannot happen for the average hash (as there is no .pdb file)
+	if (not $Data->{Deviations}) {
+		my ($Interaction, $Group, $PDB, $Residue);
+		my $Group1 = {};
+		my $Group2 = {};
+		
+		# via hashkeys it's easily possible to avoid double entries
+		my %Residues;
+			
+		foreach $Interaction ( @{$Data->{Labels}} ) {
+			# cut out the residue numbers of the interacting groups and the transition type
+			# the blanks in " - " are important, they are only in between two transition labels
+			($Group1->{Residue}, $Group2->{Residue}) = split " - ", $Interaction;
+			($Group1->{Trans}, $Group2->{Trans}) = split " - ", $Interaction;
+			
+			foreach $Group ($Group1, $Group2) {
+				$Group->{Residue} =~ s/^R(\d+)-G(.+)$/$1/;
+				$Group->{Trans} =~ s/^R(\d+)-G(\d+)-(.+)$/$3/;
+				
+				# It has to be taken care of
+				#   - only extracting each residue once
+				#   - getting the right amide bonds, in a backbone transition the next residue is needed too,
+				#     in a CT transition the next three are needed
+				
+				if ($Group->{Trans} =~ m/CT/) { # check for a charge-transfer transition
+					# add this residue and the next 3 to the hash
+					$Residues{$Group->{Residue}}   = 1;
+					$Residues{$Group->{Residue}+1} = 1;
+					$Residues{$Group->{Residue}+2} = 1;
+				}
+				elsif ($Group->{Trans} =~ m/(PHE|TYR|TRP|ASP|GLU|GLN|ASN|COOH)/) { # check for side chain transition
+					$Residues{$Group->{Residue}} = 1;
+				}
+				else { # it's a backbone transition
+					$Residues{$Group->{Residue}}   = 1;
+					$Residues{$Group->{Residue}+1} = 1;
+				}
+			}
+		}
+		
+		$Data->{Residues} = \%Residues;
+		
+		# just abbreviate the access to these numbers for the following
+		$Data->{Statistics}{ResiduesWeak}   = $Data->{Statistics}{ResidueNumber} - scalar (keys %{$Data->{Residues}});
+		$Data->{Statistics}{ResiduesStrong} = scalar (keys %{$Data->{Residues}});
+		
+		my $ResiduesStrong = $Data->{Statistics}{ResiduesStrong};
+		my $ResiduesWeak   = $Data->{Statistics}{ResiduesWeak};
+		
+		if ($Data->{Statistics}{ResidueNumber} == $ResiduesStrong) {
+			print "All residues contribute with big interactions\n";
+		}
+		elsif ($Data->{Statistics}{ResidueNumber} > $ResiduesStrong) {
+			if (not $Options->{log}) { print "\n" }
+			
+			&LogEntry (sprintf "%4d residues of $Data->{Statistics}{ResidueNumber} (%.2f%%) contributed only minor interactions and have been filtered out.\n", 
+					$ResiduesWeak, $ResiduesWeak/$Data->{Statistics}{ResidueNumber}*100);
+			&LogEntry (sprintf "%4d residues of $Data->{Statistics}{ResidueNumber} (%.2f%%) contributed strongly\n",
+					$ResiduesStrong, $ResiduesStrong/$Data->{Statistics}{ResidueNumber}*100);
+			
+			if (not $Options->{log}) { print "\n" }
+		}
+		else { # the number of residues shouldn't be bigger after filtering
+			print "ERROR: Something went wrong here: $ResiduesStrong residues contribute of $Data->{Statistics}{ResidueNumber} residues...\n";
+	#		exit 10;
+		}
+	}
+	
+	return $Data;
+} # of sub FilterData
+
+
+sub Plot { # creates the bar charts for the given values
+	my $BaseName = shift;   # the base name of the created file
+	my $Data     = shift;   # the hash containing values and labels to plot
+	
+	if ($Options->{filter}) { $Data = &FilterData ($BaseName, $Data) }
+	
+	# if more values are given than the maximum width allows, break down the plot in many single ones
+	if ($#{$Data->{Values}} > $Options->{w}) {
+		my ($Start, $End, $Fraction, $Number, $Length);
+		
+		# determine how many single plots are needed
+		$Fraction = $#{$Data->{Values}} / $Options->{w};
+		$Fraction = int ($Fraction + 1);
+		
+		$Length = length $Fraction;   # the number of digits to add leading zeros to the filename of the plots 
+		
+		for $Number (0 .. $Fraction-1) {
+			$Start = $Number * $Options->{w};
+			$End   = $Number * $Options->{w} + $Options->{w}-1;
+			
+			if ($End > $#{$Data->{Values}}) {
+				for ( $#{$Data->{Values}}+1 .. $End ) {
+					$Data->{Labels}[$_] = " ";
+					$Data->{Values}[$_] = 0;
+				}
+			}
+			
+			# add leading zeros to the number
+			$Number = sprintf "%0".$Length."d", $Number;
+			
+			&LogEntry ("Plotting interactions $Number ($Fraction altogether)\n");
+			&CreateCommandFile ("$BaseName-$Number", $Data, $Start, $End);
+		}
+		
+		system "combine-psfiles $BaseName-*.int.ps -p letter -o $BaseName.combined";
+		
+		if ($Options->{pdf}) {
+			system "$PDFCONVERTER $BaseName.combined.ps";
+		}
+	}
+	else {
+		&CreateCommandFile ($BaseName, $Data, 0, $#{$Data->{Values}});
+	}
+} # of sub Plot
+
+
+sub Distances { # determines the distances of the groups
+	my $Data     = shift;
+	my $Groups   = shift;
+	my $FmtData  = shift;
+	
+	my ($Row, $Col, $Atom1, $Atom2, $Distance);
+	
+	# $Sequence now contains the sequence of the transitions in the Hamiltonian matrix (like e.g. its axis
+	# labels if the matrix was plotted). For the interaction pattern, each label has to be combined with
+	# every other one. The following two loops run over the lower triangle under the matrix diagonal
+	for $Col ( 0 .. $Data->{Dimension}-1 ) {  # -1 because the last col (if $Col is $Data->{Dimension})in the last row is diagonal
+		for $Row ( $Col+1 .. $Data->{Dimension}) {  # 1 because first row (0) is diagonal
+			$Atom1 = {
+				x => $FmtData->[ $Groups->[$Col][0]-1 ][0],
+				y => $FmtData->[ $Groups->[$Col][0]-1 ][1],
+				z => $FmtData->[ $Groups->[$Col][0]-1 ][2],
+			};
+			
+			$Atom2 = {
+				x => $FmtData->[ $Groups->[$Row][0]-1 ][0],
+				y => $FmtData->[ $Groups->[$Row][0]-1 ][1],
+				z => $FmtData->[ $Groups->[$Row][0]-1 ][2],
+			};
+			
+			for ( qw/x y z/ ) {
+				if (not defined $Atom1->{$_} or not defined $Atom2->{$_}) {
+					push @{$Data->{Distances}}, 0;
+					next;
+				}
+			}
+			
+			$Distance = Distance ($Atom1, $Atom2);
+
+			if (not defined $Distance) {
+				push @{$Data->{Distances}}, 0;
+				next;
+			}
+			
+			$Distance = sprintf "%.2f", $Distance;
+			push @{$Data->{Distances}}, $Distance;
+		}
+	}
+} # of sub Distances
+
+
+sub ExportPDB { # creates a PDB file containing only the residues with the largest interactions
+	my $BaseName = shift;
+	my $Data     = shift;   # this is the filtered interaction data (small ones filtered out already
+	
+	my ($Interaction, $Group, $PDB, $Residue, @Output, @Residue, $Gaps, $Line);
+	my $Group1 = {};
+	my $Group2 = {};
+	
+	$Data = &FilterData ($BaseName, $Data);
+	
+	if (not -f "$BaseName.pdb") {
+		print STDERR "\nERROR: $BaseName.pdb not found.\n\n";
+		return;
+	}
+	
+	# only if there is something to filter out, the PDB is exported
+	# all statistical things have already been done in &FilterData, also the output concerning the PDB has been issued there
+#	if ($Data->{Statistics}{ResidueNumber} > $Data->{Statistics}{ResiduesStrong}) {
+		# the following routine was taken from dcinput and will produce the same PDB
+		$PDB = ParsePDB->new (FileName => $BaseName, Verbose => 0, NoHETATM => 1, NoANISIG => 1); # create a new object
+		
+		$PDB->Parse;
+		$PDB->RemoveInsertedResidues (Model => 0, Intensive => 1);
+		$PDB->RemoveAtomLocations (Model => 0, AtomLocations => "First");
+		$PDB->RenumberResidues (Model => 0);
+		
+		my @Content = $PDB->GetMinHeader;
+		
+		foreach $Residue ( sort numerically keys %{$Data->{Residues}} ) {
+			@Residue = $PDB->Get (ResidueNumber => $Residue);
+			
+			foreach $Line (@Residue) {
+				if ($Line) { push @Content, $Line }
+			}
+		}
+		
+		push @Content, $PDB->GetMinFooter;
+		open PDB, ">$BaseName.filtered.pdb" or die "\nERROR: Could not open $InFile.filtered.pdb: $!";
+		print PDB join "", @Content;
+		close PDB;
+		
+		# to determine the number of gaps in the created PDB, the stf file has to be created
+		# catch the output of makesft and grep all messages about gaps in the chains (ignored residues)
+		@Output = `dcinput -mm $BaseName.filtered.pdb`;
+		@Output = grep "N-C distance", @Output;
+		$Gaps = scalar @Output;
+		$Data->{Statistics}{Gaps} = $Gaps;
+		
+		&LogEntry ("$Gaps gaps have been found in the filtered PDB file.\n");
+#	}
+} # of sub ExportPDB
+
+
+sub CreateCommandFile { # creates a command file for plotting a bar chart with gnuplot
+	my $BaseName = shift;   # the base name of the created file
+	my $Data     = shift;   # the hash containing values and labels to plot
+	my $Start    = shift;   # the start index to plot only a subset of the values
+	my $End      = shift;   # the end index to plot only a subset of the values
+	
+	my ($OutFile, $Counter, $Interactions, $Title, $SideChains, $ChargeTransfer, $Label, $Index);
+	
+	# if no start and end index are given, select the whole array
+	if (not defined $Start) { $Start = 0                   }
+	if (not defined $End  ) { $End   = $#{$Data->{Values}} }
+	
+	open FILE, ">$BaseName.int.cmd" or die "ERROR: Could not create file $BaseName.int.cmd: $!";
+	
+	print FILE "set encoding iso_8859_1\n";
+	
+	if ( not $Options->{p} ) {
+		$OutFile = $BaseName;
+		$OutFile = $OutFile . ".int.ps";
+		
+		print FILE "set terminal postscript enhanced colour solid \"Helvetica\" 14\n";
+		print FILE "set output \"$OutFile\"\n\n";
+	}
+	
+	print FILE "set xzeroaxis\n";
+	
+	# old syntax (before gnuplot 4.2)
+	# print FILE "set ticscale 1.0 0.6\n\n";
+	print FILE "set tics scale 1.0\n\n";
+	
+	$Counter = 0;
+	$Interactions = "";
+	$SideChains = 0;
+	$ChargeTransfer = 0;
+	
+	####################################################################################################
+	# create the list of chromophore names to rename the tics of the x-axis
+	####################################################################################################
+	
+	my $Points = {};
+	$Points->{BB} = "";
+	$Points->{SC} = "";
+	$Points->{CT} = "";
+	$Points->{CTSC} = "";
+	
+	# all backbone interactions without CT and SC
+	foreach $Index ( $Start .. $End ) {
+		if ($Data->{Labels}[$Index] =~ m/CT/) { $ChargeTransfer = 1 }
+		if ($Data->{Labels}[$Index] =~ m/(PHE|TYR|TRP|ASN|GLN|ASP|GLU)/) { $SideChains = 1 }
+		
+		if ( $Data->{Labels}[$Index] ne " " and $Data->{Labels}[$Index] !~ m/CT/ and $Data->{Labels}[$Index] !~ m/(PHE|TYR|TRP|ASN|GLN|ASP|GLU)/ ) {
+			++$Counter; # start with $Counter = 1
+			$Interactions = $Interactions . "\"$Data->{Labels}[$Index]\" $Counter, ";
+			$Points->{BB} = $Points->{BB} . "$Counter\t$Data->{Values}[$Index]\n";	
+				
+			if ($Options->{dbg}) {
+				# debug output to print the actual value into the plot
+				print FILE "set label \"$Data->{Values}[$Index]\" at ", $Counter, ", 0 front rotate right\n";
+			}
+		}
+	}
+	
+	# all CT interactions without SC
+	if ($ChargeTransfer) {
+		foreach $Index ( $Start .. $End ) {
+			if ( $Data->{Labels}[$Index] ne " " and $Data->{Labels}[$Index] =~ m/CT/ and $Data->{Labels}[$Index] !~ m/(PHE|TYR|TRP|ASN|GLN|ASP|GLU)/ ) {
+				++$Counter;
+				$Interactions = $Interactions . "\"$Data->{Labels}[$Index]\" $Counter, ";
+				$Points->{CT} = $Points->{CT} . "$Counter\t$Data->{Values}[$Index]\n";	
+				
+				if ($Options->{dbg}) {
+					# debug output to print the actual value into the plot
+					print FILE "set label \"$Data->{Values}[$Index]\" at ", $Counter, ", 0 front rotate right\n";
+				}
+			}
+		}
+	}
+	
+	# all SC interaction without CT
+	if ($SideChains) {
+		foreach $Index ( $Start .. $End ) {
+			if ( $Data->{Labels}[$Index] ne " " and $Data->{Labels}[$Index] =~ m/(PHE|TYR|TRP|ASN|GLN|ASP|GLU)/ and $Data->{Labels}[$Index] !~ m/CT/ ) {
+				++$Counter;
+				$Interactions = $Interactions . "\"$Data->{Labels}[$Index]\" $Counter, ";
+				$Points->{SC} = $Points->{SC} . "$Counter\t$Data->{Values}[$Index]\n";	
+				
+				if ($Options->{dbg}) {
+					# debug output to print the actual value into the plot
+					print FILE "set label \"$Data->{Values}[$Index]\" at ", $Counter, ", 0 front rotate right\n";
+				}
+			}
+		}
+	}
+	
+	# all SC interaction with CT
+	if ($ChargeTransfer and $SideChains) {
+		foreach $Index ( $Start .. $End ) {
+			if ( $Data->{Labels}[$Index] ne " " and $Data->{Labels}[$Index] =~ m/(PHE|TYR|TRP|ASN|GLN|ASP|GLU)/ and $Data->{Labels}[$Index] =~ m/CT/ ) {
+				++$Counter;
+				$Interactions = $Interactions . "\"$Data->{Labels}[$Index]\" $Counter, ";
+				$Points->{CTSC} = $Points->{CTSC} . "$Counter\t$Data->{Values}[$Index]\n";	
+				
+				if ($Options->{dbg}) {
+					# debug output to print the actual value into the plot
+					print FILE "set label \"$Data->{Values}[$Index]\" at ", $Counter, ", 0 front rotate right\n";
+				}
+			}
+		}
+	}
+	
+	####################################################################################################
+	
+	$Interactions =~ s/, $//;   # remove the last comma again
+	
+	$Title = $BaseName;
+	$Title =~ s/_/-/g;    # underscores cause subscript in the postscript files, replace them with dashes
+	
+	print FILE "set xtics ($Interactions)\n";
+	print FILE "set xtics rotate by 90\n";
+	print FILE "set ytics border nomirror norotate\n\n";
+	print FILE "set title \"$Data->{Title}\"\n";
+	print FILE "show label\n";
+	
+	# print FILE "set xlabel \"$Data->{xlabel}\"\n"; # the xlabel in that case only takes up space...
+	print FILE "set ylabel \"$Data->{ylabel}\"\n\n";
+	
+	# $Counter now holds the number of labels
+	print FILE "set xrange [0:", $Counter+1, "]\n";
+	print FILE "set yrange [-$Data->{Maximum}:$Data->{Maximum}]\n";
+	print FILE "set style fill solid\n";
+	print FILE "set boxwidth 0.6\n";
+	print FILE "unset key\n";
+	
+	# check whether it is the $Averages hash by testing for the standard deviations
+	if (defined $Data->{Deviations}) {
+		print FILE "\n";
+		
+		# the xlabels are shifted about 1 with regard to the array index, i.e. index 0 is placed at
+		# x = 1, defined at set xrange [0.. $Counter+1]
+		for $Index ( $Start .. $End ) {
+			if (not defined $Data->{Deviations}[$Index]) { $Label = 0 }
+			                                        else { $Label = $Data->{Deviations}[$Index] }
+			
+			print FILE "set label \"$Label\" at ", $Index+1, ", graph 0.96 front rotate right\n";
+		}
+	}
+	
+	# check whether the residue distances were requested and have therefore been determined
+	if (defined $Data->{Distances}) {
+		print FILE "\n";
+
+		$Counter = 0;
+	
+		# the xlabels are shifted about 1 with regard to the array index, i.e. index 0 is placed at
+		# x = 1, defined at set xrange [0.. $Counter+1]
+		for $Index ( $Start .. $End ) {
+			++$Counter;  # start counter at 1
+			if (not defined $Data->{Distances}[$Index]) { next  }
+			                                       else { $Label = $Data->{Distances}[$Index] }
+			
+			print FILE "set label \"$Label {\305}\" at ", $Counter, ", graph 0.96 front rotate right\n";
+		}
+	}
+	
+	print FILE "\n\n";
+	
+	print FILE "set multiplot\n";
+	
+	$Counter = 0;
+	
+	####################################################################################################
+	# plot the backbone interactions
+	####################################################################################################
+	
+	if ($Points->{BB}) {
+		print FILE "plot \"-\" with boxes linetype 1\n";
+		print FILE "$Points->{BB}";	
+		print FILE "end\n\n";
+	}
+	
+	
+	####################################################################################################
+	# plot the charge-transfer interactions
+	####################################################################################################
+	
+	if ($Points->{CT}) {
+		print FILE "plot \"-\" with boxes linetype 2\n";
+		print FILE "$Points->{CT}";	
+		print FILE "end\n\n";
+	}
+	
+	
+	####################################################################################################
+	# plot the side chain interactions
+	####################################################################################################
+	
+	if ($Points->{SC}) {
+		print FILE "plot \"-\" with boxes linetype 3\n";
+		print FILE "$Points->{SC}";	
+		print FILE "end\n\n";
+	}
+	
+	
+	####################################################################################################
+	# plot the CT / side chain interactions
+	####################################################################################################
+	
+	if ($Points->{CTSC}) {
+		print FILE "plot \"-\" with boxes linetype 4\n";
+		print FILE "$Points->{CTSC}";	
+		print FILE "end\n\n";
+	}
+	
+	####################################################################################################
+	
+	print FILE "set nomultiplot\n";
+	
+	# if not postscript is requested, gnuplot is kept alive
+	if ( $Options->{p} ) { print FILE "\npause -1\n" }
+	
+	close FILE;
+	
+	my @Output = `gnuplot $BaseName.int.cmd 2>&1`;
+	
+	# discard leading empty lines of the @Output
+	while (@Output and $Output[0] eq "\n") { shift @Output }
+	
+	# only print the gnuplot output if there actually is something to output (this omits the two empty
+	# lines which are usually printed and mess up the output of scripts plotting hundreds of spectra)
+	if (@Output) { print join "", @Output }
+	
+	# keep the gnuplot command file of the average lot, but delete all others
+#	if ($BaseName ne "averages") { unlink "$BaseName.int.cmd" }
+} # of sub CreateCommandFile
+
+
+sub LogEntry { # append the logfile
+	my $Message = shift;
+	
+	if ($Options->{log}) {
+		open  LOGFILE, ">>$LOGFILE" or die "Unable to open the log file $LOGFILE: $!";
+		print LOGFILE "$Message";
+		close LOGFILE;
+	}
+	else {
+		print "$Message";
+	}
+} # of sub LogEntry
+
+
+sub numerically { # used with sort, to sort a list of numbers numerically
+	$a <=> $b;
+} # of sub numerically

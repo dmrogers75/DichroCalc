@@ -1,0 +1,283 @@
+#!/usr/bin/perl -w
+
+####################################################################################################
+#
+# Program:    plotpotential
+#
+# Function:   Creates a gnuplot input file for a contour plot. Input is xyzq data, that is
+#             x, y and z coordinates and an energy for each point.
+#
+# Author:     Benjamin Bulheller
+#
+# Version:    $Revision: 3919 $, $Date: 2009-02-12 02:12:29 +0000 (Thu, 12 Feb 2009) $
+#
+# Date:       July 2006
+#
+#
+# Requirements:
+#
+# The file potential.cmd is loaded in the created command file. That way, the plots
+# can be changed all at once, without recreating all files.
+#
+####################################################################################################
+
+use strict;                          # always use this!!!
+use Data::Dumper;                    # for easy printout of arrays and hashes
+use FindBin qw/$Bin/;                # sets $Bin to the directory of the script
+use lib $Bin;                        # add the script's directory to the library path
+use lib "$ENV{HOME}/bin/perllib/";   # adds ~/bin/perllib to the library path
+use DebugPrint;                      # handy during debugging
+use GetBaseName;                     # to determine base name and extension of a file
+use ReadSpectrum;                    # to read spectra into arrays
+use GetParameters;                   # to handle command line parameters
+
+
+###################################################################################################
+# Configuration for GetParameters
+####################################################################################################
+
+my $Parameters = {     # create an anonymous hash
+	xrange  => "list",
+	yrange  => "list",
+	zrange  => "list",
+	title   => "string",
+	force   => "switch",
+	atoms   => "switch",
+};
+
+my $Options = {       # create an anonymous hash
+};
+
+my $Help = "\n" .
+"Usage:   plotpotential file1 [file2] [...]\n" .
+"\n" .
+"     -force     create (overwrite) command files, if they already exist\n" .
+"     -title     define a title\n" .
+"     -atoms     include the atoms (if a .atoms file is found)\n" .
+"     -xrange    sets the xrange to -x:x (one value given) or -x:y (two values given)\n" .
+"     -yrange    sets the yrange to -x:x (one value given) or -x:y (two values given)\n" .
+"     -zrange    sets the zrange to -x:x (one value given) or -x:y (two values given)\n" .
+"\n" .
+"     For each file a gnuplot command file (.cmd) for a contour plot is\n" .
+"     created, if it does not exist already.\n" .
+"\n" .
+"     The file name must contain the constant value like so:\n".
+"       file1_x0.5.xyzq   for the slice at x = 0.5\n" .
+"       file2_z-1.2.xyzq  for the slice at z = -1.2\n" .
+"\n" .
+"     The part before the first dot or underscore is considered the name of the\n" .
+"     parameter set, e.g. NMA4FIT2_z0.5.xyz. If a file with that name and the\n" .
+"     extension .atoms is found, it is included in the plot.\n" .
+"\n";
+
+####################################################################################################
+
+my ($File, $BaseName, $Name, $Trans, $Coord, $Columns, $Value, $Labels, $Pos);
+my ($ParSet, $AtomsFile, @Fields, $Line, $CommandFile, @Spectrum, $Maximum);
+my (@Content, $GlobalMin, $GlobalMax);
+
+GetParameters ($Parameters, $Options, $Help);
+
+if (not $Options->{rest}) {
+	print STDERR "\nERROR: No input files given!\n$Help";
+	exit 1;
+}
+
+if (not -f "potential.cmd") { &CreatePotentialCmd }
+
+foreach $File ( @{$Options->{rest}} ) {
+	if (not -f $File) {
+		print STDERR "ERROR: File $File not found!\n";
+		next;
+	}
+	
+	$BaseName = GetBaseName ($File);
+	$CommandFile = $BaseName . ".cmd";
+	
+	$ParSet = $File;
+	$ParSet =~ s/^([A-Za-z01-9]+)[\._].+/$1/;
+	
+	# if a .cmd file already exists, skip this file
+	if (-f $CommandFile and not $Options->{force}) {
+		print "File $CommandFile already exists, skipping it...\n";
+		next;
+	}
+	
+	# if a hint on Hirst or Woody is found in the file name, save this information
+	if    ($BaseName =~ m/NMA\.nma/) { $Name = "Hirst" }
+	elsif ($BaseName =~ m/NMA\.wdy/) { $Name = "Woody" }
+	                            else { $Name = ""      }
+	
+	@Spectrum = ReadSpectrum ($File);
+	$Maximum = 0;
+	foreach ( @Spectrum ) {
+		# skip values bigger than 1e10 (1e20 is assigned to point within the vdW radii)
+		if (abs $_->[3] > 1e10)     { next               }
+
+		# check if the current value is biggest till now
+		if (abs $_->[3] > $Maximum) { $Maximum = $_->[3] }
+	}
+
+	$Maximum = int (2*$Maximum + 1);
+	
+	if    ($BaseName =~ m/_x/) {
+		$Coord = "x";
+		$Columns = "2:3:4"; 
+		$Labels = "set xlabel \"y / {\\305}\"\nset ylabel \"z / {\\305}\"\nset noztics\n";
+	}
+	elsif ($BaseName =~ m/_y/) {
+		$Coord = "y";
+		$Columns = "1:3:4";
+		$Labels = "set xlabel \"x / {\\305}\"\nset ylabel \"z / {\\305}\"\nset noztics\n";
+	}
+	elsif ($BaseName =~ m/_z/) {
+		$Coord = "z";
+		$Columns = "1:2:4";
+		$Labels = "set xlabel \"x / {\\305}\"\nset ylabel \"y / {\\305}\"\nset noztics\n";
+	}
+	else  {
+		print STDERR "ERROR: coordinate (x, y or z) could not be determined for file $File!\n";
+		next;
+	}
+	
+	$Pos = index ($BaseName, "_t");
+	if ($Pos < 0) {
+		print STDERR "ERROR: transition could not be determined for file $File!\n";
+		next;
+	}
+	else {
+		$Trans = substr ($BaseName, $Pos+2, 1);
+	}
+	
+	$Pos = index ($BaseName, "_$Coord");
+	if ($Pos < 0) {
+		print STDERR "ERROR: constant value could not be determined for file $File!\n";
+		next;
+	}
+	else {
+		$Value = substr ($BaseName, $Pos+2);
+	}
+	
+	open  CMD, ">$CommandFile";
+	print CMD "load \"potential.cmd\"\n";
+	print CMD "\n";
+	print CMD "set cbrange [-0.05:0.05]\n";#zli 
+	print CMD "set palette defined (-1 \"blue\", 0 \"white\", 1 \"red\")\n";
+	print CMD "set cntrparam levels incr -0.1, 0.01, 0.1\n";
+	print CMD "\n";
+	print CMD "$Labels";
+	print CMD "\n";
+	
+	foreach ( qw/xrange yrange zrange/ ) {
+		if ($Options->{$_}) {
+			if (scalar @{$Options->{$_}} == 1) {
+				print CMD "set $_ [", -$Options->{$_}[0], ":", $Options->{$_}[0], "]\n";
+			}
+			elsif (scalar @{$Options->{$_}} == 2) {
+				print CMD "set $_ [", $Options->{$_}[0], ":", $Options->{$_}[1], "]\n";
+			}
+			else {
+				print STDERR "\nERROR: -$_ needs either one or two parameters! ";
+				print scalar @{$Options->{$_}}, " were found.\n";
+				exit 2;
+			}
+		}
+	}
+	
+	# determine the minimum and maximum interaction value (4th column)
+	open XYZ, $File or die "\nERROR: Could not open $File: $!";
+	@Content = <XYZ>;
+	close XYZ;
+	
+	$GlobalMin =  1E20;
+	$GlobalMax = -1E20;
+	
+	while (@Content) {
+		$Line = shift @Content;             # read the next line
+		$Line =~ s/^\s+//;                  # remove leading blanks
+		if ($Line =~ m/^#/) { next }        # skip comment lines
+		@Fields = split /\s+/, $Line;       # split line at multiple spaces
+		if ($#Fields != 3) { next }         # skip line which do not have exactly 4 columns
+		
+		# REALLY large or small values are used for the van der Waals radii
+		if ($Fields[3] > 1E10 or $Fields[3] < -1E10) { next }
+		
+		if ($GlobalMin > $Fields[3]) { $GlobalMin = $Fields[3] }
+		if ($GlobalMax < $Fields[3]) { $GlobalMax = $Fields[3] }
+	}
+	
+	$GlobalMin = int --$GlobalMin;  
+	$GlobalMax = int ++$GlobalMax;
+	
+ 	print CMD "set zrange [$GlobalMin:$GlobalMax]\n"; #zli-1203-modi
+	
+	print CMD "\n";
+	
+	# search a file with the atom coordinates and extract the labels if it is found
+	if ($Options->{atoms} and -f "$ParSet.atoms") {
+		# generate the command for splot
+		$AtomsFile = ", \"$ParSet.atoms\" with points";
+		
+		open  ATOMS, "<$ParSet.atoms";
+		
+		while (<ATOMS>) {
+			$Line = $_;           # put the current line in a 'nicer' variable
+			$Line =~ s/^\s+//g;   # remove leading blanks for split
+			chomp $Line;          # remove the line feed
+			
+			# split the line at multiple blanks into 4 fields at most (in case the atom labels contain blanks)
+			@Fields = split /\s+/, $Line, 4;
+			print CMD "set label \"$Fields[3]\" at $Fields[0], $Fields[1], $Fields[2]\n";
+		}
+		
+		close ATOMS;
+		print CMD "\n";
+	}
+	else {
+		$AtomsFile = "";
+	}
+	
+	if ($Options->{title}) {
+		print CMD "set title \"$Options->{title}\"\n";
+	}
+	else {
+		my $Title = $BaseName;
+		$Title =~ s/_/ /g; # underscores are used for subscript in gnuplot, remove them
+		print CMD "set title  \"$Title $Name t=$Trans $Coord=$Value\"\n";
+	}
+	
+	print CMD "set output \"$BaseName.ps\"\n";
+	print CMD "\n";
+	print CMD "splot      \"$File\" u $Columns with lines$AtomsFile\n";
+	print CMD "\n";
+	
+	system "gnuplot $CommandFile";
+} # foreach $File ( @{$Options->{rest}} )
+
+
+####################################################################################################
+# SUBROUTINES
+####################################################################################################
+
+sub CreatePotentialCmd { # creates the file with the main settings which is loaded in each plot
+	open  CMD, ">potential.cmd";
+	
+	print CMD <<EOF;
+set encoding iso_8859_1
+set terminal postscript enhanced colour solid
+
+set zero 1e-10
+set size square
+set view 0,0
+
+unset key
+unset hidden3d
+unset surface
+
+unset contour
+# set contour base
+set pm3d
+
+EOF
+	close CMD;
+}

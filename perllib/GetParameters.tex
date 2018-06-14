@@ -1,0 +1,333 @@
+\documentclass[12pt, a4paper]{article}
+
+% #####################################################################################################################
+%
+% Title:           Documentation for the Perl library GetParameters.pm
+%
+% Mail address:    webmaster.-at-.bulheller.com
+%
+% Website:         www.bulheller.com
+%
+% Mail address:    webmaster.-at-.bulheller.com
+%
+% Version:         $Revision: 4630 $, $Date: 2009-07-11 08:16:26 +0100 (Sat, 11 Jul 2009) $
+%
+% Licence:         This program is free software: you can redistribute it and/or modify
+%                  it under the terms of the GNU General Public License as published by
+%                  the Free Software Foundation, either version 3 of the License, or
+%                  (at your option) any later version.
+%
+%                  This program is distributed in the hope that it will be useful,
+%                  but WITHOUT ANY WARRANTY; without even the implied warranty of
+%                  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+%                  GNU General Public License for more details.
+%
+%                  You should have received a copy of the GNU General Public License
+%                  along with this program.  If not, see http://www.gnu.org/licenses/.
+%
+% #####################################################################################################################
+
+\usepackage{graphics}
+\usepackage[super, square, sort&compress]{natbib}
+\usepackage[margin=2.5cm]{geometry}
+
+\setlength{\parindent}{0em}
+\setlength{\parskip}{0.5em}
+
+\title{GetParameters.pm}
+\author{Benjamin Bulheller\\ \small www.bulheller.com\\ \small webmaster.-at-.bulheller.com}
+
+\begin{document}
+\maketitle
+
+\tableofcontents
+
+\newpage
+
+% ==================================================================================================
+
+\section{Introduction}
+
+\verb'GetParameters.pm' is a Perl library for parsing command line options given to a script. There are quite a few packages like this out there (\verb'GetOpt', \verb'GetOpt::EvaP', \verb'GetOptions') and some of them may be more powerful than this. However, this package was created over three years while working on a PhD thesis and at that time a small package was needed which could quickly be extended about needed features and it was easier to write a new package.
+
+For example, one thing that was needed was a single hash structure containing all given parameters instead of assigning the parameters to individual variables (\verb'GetParameters' creates the hash \verb'$Options' containing the parsed command line). This particularly comes in handy when all parameters have to be passed on to a subroutine, avoiding lots of global variables.
+
+A desired type definition (apart from e.g.\ integer or string) was ``file'', which would automatically check for existence of the given file(s). This includes a check for multiple extensions if only the base name was given.
+
+Option bundling (using \texttt{-abc} instead of \texttt{-a -b -c}) was not implemented, with the advantage of not needing double dashes \verb'--' for long option names.
+
+The main routine of this package reads in the command line parameters and returns a hash with the options as keys and the arguments as items. The options can be defined as:
+
+\begin{itemize}
+\item switches (true if given);
+\item strings, file names, integers or real numbers;
+\item lists (read until the next option is reached,  a minimum and maximum number of elements in the list can be defined as well as the type of the elements).
+\end{itemize}
+
+The parameters can be defined as optional or mandatory. Lists can be given in batches, that is for example the items for the list \verb'out' are collected:
+\begin{verbatim}
+scriptname -out file1 file2 file3 -a -b -c -out file4
+\end{verbatim}
+
+The predefined option \verb'-h' displays help screen, if given (unless \verb'-h' is defined as one of the program's parameters).  Wild cards (\verb'*.pdb', \verb'chain?.pdb') are expanded automatically and the list of files is returned.
+
+
+% ==================================================================================================
+
+\newpage
+
+\section{Implementation}
+
+To use the routine, the references to three variables have to be provided: a hash containing the definitions of the parameters, a hash for the parsed options, and a string with the help message. Optionally it is possible to define default values for the options. It is easier to define these three variables as references in the first place:
+
+
+\begin{verbatim}
+#!/usr/bin/perl -w
+
+use GetParameters;
+
+my $Parameters = {      # create a reference to a hash
+   f => "string",
+};
+
+my $Options    = {      # create a reference to a hash
+   f => "example.txt",
+};
+
+my $Help       = "\n" . # a string holding the usage information
+   "Usage:   \n" .
+   "\n";
+
+\end{verbatim}
+
+This, for example, defines the parameter \verb'-f' which can contain any value, read in as a string. By default it contains the string \verb'example.txt'. The following parameter types are defined:
+
+\begin{itemize}
+\item \verb'switch':  this returns true if given
+\item \verb'string': just any string
+\item \verb'integer': an integer number
+\item \verb'real': a real number
+\item \verb'file': a file (checked for existence)
+\item \verb'list': a list of strings by default
+\item \verb'stringlist': a list of strings
+\item \verb'integerlist': a list of integers
+\item \verb'reallist': a list of real numbers
+\item \verb'filelist': a list of (existing) files
+\end{itemize}
+
+\verb'$Parameters' contains the possible parameters and their definition (type). After parsing \verb'$Options' contains the parameters and their values. It can be used to define default values for the parameters which will be overwritten if the parameter is given by the user. \verb'$Help' is a single string which contains the usage information, displayed if an input error is detected (an undefined option for example) or not parameter is given at all:
+
+\begin{verbatim}
+my $Help = "\nHelp string".
+   "Displayed when -h is found\n".
+   "or no command line parameters are given\n";
+\end{verbatim}
+
+The command to parse the command line parameters is
+
+\begin{verbatim}
+GetParameters ($Parameters, $Options, $Help)
+\end{verbatim}
+
+
+% ==================================================================================================
+
+
+\section{Usage Example}
+
+Assuming the following setup
+
+\begin{verbatim}
+my $Parameters = {      # create a reference to a hash
+   t => "string",
+   v => "switch",
+   f => "list",
+};
+\end{verbatim}
+
+``\verb't''' is defined as string, ``\verb'v''' as switch and ``\verb'f''' as list. The following command line given to the script \verb'scriptname':
+
+\begin{verbatim}
+scriptname -t somestring -v -f file1 file2 file3
+\end{verbatim}
+
+would result into
+
+\begin{verbatim}
+$Options->{f} => [file1, file2, file3]
+$Options->{t} => "somestring"
+$Options->{v} => 1
+\end{verbatim}
+
+If the parameter \verb'-h' is found, the help screen is printed. A plain \verb'list' without type specification is a list of strings by default. If it were defined as a \verb'filelist', each given file would be checked for existence and rejected if not found. This also means that a \verb'filelist' should only be used for files that must already exist.
+
+All parameters which cannot be attributed to one of the switches are collected in the array \verb'$Options->{rest}' (see section \ref{Sec:rest}).
+
+% ==================================================================================================
+
+\section{Parameter Types}
+
+\subsection{Switches}
+
+If a parameter is defined as \verb'switch' like this
+
+\begin{verbatim}
+$Parameters = {
+   s => "switch"
+}
+\end{verbatim}
+
+it is true, if given, and false if not given by the user. In a script it could be evaluated like this:
+
+\begin{verbatim}
+if ($Options->{s}) { .... }
+              else { .... }
+\end{verbatim}
+
+If for some reason a switch was defined to be true before the actual command line parameters are parsed (e.g.\ because a configuration file was read), it can be forced to be false by adding ``=0'' to the parameter (without a blank!):
+
+\begin{verbatim}
+scriptname -v=0
+\end{verbatim}
+
+
+\subsection{Integers and Real Numbers}
+
+The types \verb'integer' and \verb'real' define a number which is checked for being an integer or floating point value.
+
+
+\subsection{Files}
+
+A \verb'file' parameter defines the name of a file which has to exist. To read the name of a not yet existing output file for example one would simply read a string. In order to additionally check for one or more extensions, these can also be defined in curly braces with a pipe symbol as delimiter:
+
+\begin{itemize}
+\item \verb'f => "file"' and then \verb'-f myfile'
+
+Looks for exactly the given string \verb'myfile'
+
+\item \verb'f => "file{txt}"' and then \verb'-f myfile'
+
+looks for \verb'myfile' and \verb'myfile.txt'
+
+\item \verb'f => "file{doc|txt}"' and then \verb'-f myfile'
+
+looks for \verb'myfile', \verb'myfile.doc' and \verb'myfile.txt'
+\end{itemize}
+
+
+% ==================================================================================================
+
+\section{The \texttt{\$Options->\{rest\}} Hash}
+
+\label{Sec:rest}
+
+The command line is parsed one parameter after another and the arguments are handled according to their definition. Options starting with a dash (\texttt{-}) are regarded as parameters, unless the dash is recognized as the minus symbol of a numeric value. All items following a parameter defined as a list will be added to this parameter's array until the next parameter is reached. All other items (not following a list parameter) are collected in \verb'$Options->{rest}'. Consider the following parameter definition
+
+\begin{verbatim}
+my $Parameters = {      # create a reference to a hash
+   t => "string",
+   v => "switch",
+   f => "list",
+};
+\end{verbatim}
+
+and this command line:
+
+\begin{verbatim}
+scriptname stuff1 -t MyString stuff2 -v stuff3 stuff4 -f file1 file2 file3
+\end{verbatim}
+
+The first item, \verb'stuff1' is not preceded by any parameter and is hence added to \verb'{rest}' right away. \verb'-t' is recognized as a parameter defined as string and hence only one value, \verb'MyString', is read while the one following it goes into \verb'{rest}'. \verb'-v' is a switch and only causes this hash key to be set true. The items following \verb'-f' are all added to it since it is defined as a list. All this would result into this \verb'$Options' hash:
+
+\begin{verbatim}
+$Options->{f}    => [file1, file2, file3]
+$Options->{t}    => "MyString"
+$Options->{v}    => 1
+$Options->{rest} => [stuff1, stuff2, stuff3, stuff4]
+\end{verbatim}
+
+The \verb'{rest}' ``parameter'' may be given a definition as well. This may be necessary if a script is only given filenames or integer numbers without the need to use a specific option for that. This definition can be e.g. a \verb'filelist', \verb'reallist', \verb'integerlist', etc. but always has to be a list: 
+
+\begin{verbatim}
+my $Parameters = {      # create a reference to a hash
+  rest => "filelist",
+};
+\end{verbatim}
+
+By default it is assigned the value \verb'stringlist'. Strings that contain only digits, a leading dash and periods, that is negative numbers, cannot be used as parameters as they would be mistaken for a negative number. In the following command line '-1.2' would therefore be treated as a negative number:
+
+\begin{verbatim}
+scriptname stuff -numbers 3.4 -1.2 7.71 -string perl 
+\end{verbatim}
+
+with \verb'-numbers' being e.g. a \verb'reallist' and \verb'-string' a simple string would result into
+
+\begin{verbatim}
+$Options->{rest}    => [stuff]
+$Options->{numbers} => [3.4, -1.2, 7.71]
+$Options->{string}  => "perl"
+\end{verbatim}
+
+
+
+% ==================================================================================================
+
+\section{Define Mandatory Parameters}
+
+An asterisk at the end of the type declaration marks a parameter as mandatory, for example
+
+\begin{verbatim}
+$Parameters{t} = "string*";
+\end{verbatim}
+
+% ==================================================================================================
+
+\section{Define the Minimum/Maximum Size of a List}
+
+The ``\verb'list''' declaration can be followed by ``\verb'[min,max]''' to define a range for the size of the list or ``\verb'[value]''' to define a required size of it. This also works for \verb'{rest}' to catch a wrong number of parameters in addition to the ones sorted by switches.
+
+Examples:
+
+\begin{verbatim}
+$Parameters->{l} = "list[3]";    # exactly 3 elements
+$Parameters->{l} = "list[3]*";   # exactly 3 elements, mandatory
+$Parameters->{l} = "list[2,4]";  # 2, 3 or 4 elements
+$Parameters->{l} = "list[2,]";   # at least 2 elements
+$Parameters->{l} = "list[,3]";   # at most 3 elements
+\end{verbatim}
+
+This works with all defined lists:
+\begin{itemize}
+\item \verb'list': a list of strings by default
+\item \verb'stringlist': a list of strings
+\item \verb'integerlist': a list of integers
+\item \verb'reallist': a list of real numbers
+\item \verb'filelist': a list of (existing) files
+\end{itemize}
+
+A file list may also contain one or more possible extensions in curly braces and it does not matter in which order the extensions or range is given, i.e.\ \verb'filelist[2]{txt}' and \verb'filelist{txt}[2]' are equivalent.
+
+To end the list input and start e.g. with the files to process (which will be stored
+in \verb'$Options->{rest}'), use the \verb'--' parameter:
+
+\begin{verbatim}
+scriptname -range 150 250 -- *.cd
+\end{verbatim}
+
+This is not needed in case another parameter follows.
+
+% ==================================================================================================
+
+\section{Differentiate Between Given Parameters and Default Values}
+
+Parameters given via the command line overwrite default parameters. Sometimes it is necessary to determine whether a parameter was really given via the command line or whether it was just the default value that had been taken. For this purpose the \verb'$Options->{GivenParams}' key is generated, which contains exactly the given and unaltered parameters.
+
+The library itself needs this value if list parameters are split and given in multiple batches to the script:
+
+\begin{verbatim}
+prog  -l as er ty  -f file  -l fg cx
+\end{verbatim}
+
+would result in a list ``\verb'l''' containing the five given elements. When the first three items are read the entry \verb'l' in \verb'$WasGiven' is false and the library will delete the default values, if any are defined. When the last two items are read, the \verb'$WasGiven' entry is true and the three items already present in the array are recognized as having been given via the command line and are not deleted.
+
+\end{document}

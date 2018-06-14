@@ -1,0 +1,35 @@
+# Name     Type   Trans   Phi      Psi
+NMA0IR	    NMA	    1      0.0      0.0     # example peptide	
+NMA4FIT2    NMA     2      0.0      0.0     # peptide bond
+CT01009A    CTR     4    180.0    180.0     # charge-transfer
+CTBE009A    CTR     4   -135.0    135.0     # charge-transfer
+CT-BE09A    CTR     4    135.0   -135.0     # charge-transfer
+CT05009A    CTR     4   -120.0    120.0     # charge-transfer
+CT-0509A    CTR     4    120.0   -120.0     # charge-transfer
+CT02009B    CTR     4   -120.0    180.0     # charge-transfer
+CT-0209B    CTR     4    120.0    180.0     # charge-transfer
+CT08009A    CTR     4   -120.0     60.0     # charge-transfer
+CT-0809A    CTR     4    120.0    -60.0     # charge-transfer
+CT03009A    CTR     4    -60.0    180.0     # charge-transfer
+CT-0309A    CTR     4     60.0    180.0     # charge-transfer
+CT31009A    CTR     4    -74.0     -4.0     # charge-transfer
+CT-3109A    CTR     4     74.0      4.0     # charge-transfer
+CTBT009B    CTR     4    -62.0    -41.0     # charge-transfer
+CT-BT09B    CTR     4     62.0     41.0     # charge-transfer
+CTAL009A    CTR     4    -48.0    -57.0     # charge-transfer
+CT-AL09A    CTR     4     48.0     57.0     # charge-transfer
+CT15009A    CTR     4    -60.0    -60.0     # charge-transfer
+CT-1509A    CTR     4     60.0     60.0     # charge-transfer
+PHECASI3    PHE     4      0.0      0.0     # phenylalanine
+TYRCASY4    TYR     4      0.0      0.0     # tyrosine
+TRPCASH1    TRP     4      0.0      0.0     # tryptophan
+ASNHIRST    ASN     4      0.0      0.0     # asparagine
+GLNHIRST    GLN     4      0.0      0.0     # glutamine
+ASP_CNVE    ASP     2      0.0      0.0     # aspartic acid
+GLU_CNVE    GLU     2      0.0      0.0     # glutamic acid
+FCWEIGH7    NAP     5      0.0      0.0     # naphthalenediimide (Frank-Condon factor > 0.7)
+ADE-FUL3      A     2      0.0      0.0     # adenine
+GUAWFUL3      G     2      0.0      0.0     # guanine (considering water)
+CYT-FUL3      C     2      0.0      0.0     # cytosine
+THY-FUL3      T     2      0.0      0.0     # thymine
+URA-FUL3      U     2      0.0      0.0     # uracil

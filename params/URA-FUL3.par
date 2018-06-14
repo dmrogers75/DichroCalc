@@ -1,0 +1,32 @@
+  -URA-FUL3-
+# only two transitions, one close to 290 nm and the the one with lowest energy around 260nm
+# constant moment length of 1 Angstroms
+8
+        -0.000         -1.396          0.000          1.00  # N1
+        -1.366         -0.655          0.023          1.00  # C2
+        -2.486         -1.174          0.040          1.00  # O2
+        -1.203          0.718          0.021          1.00  # N3
+        -0.005          1.397          0.000          1.00  # C4
+         0.006          2.625         -0.003          1.00  # O4
+         1.151          0.570         -0.022          1.00  # C5
+         1.038         -0.785         -0.011          1.00  # C6
+&TRANSITION 1->... # URA-FUL3
+   2   40327.7842       # 247.97 nm            # Transition moment 3.17, angle -7.00 to y axis
+       0.1219      0.9925      0.0000   1.000  # Electr. mom., scale fac.
+       0.0000      0.0000      0.0000          # Magnet. mom.
+       0.00000000      0.00000000      0.00000000     -3.16531228
+       0.12186934      0.99254615      0.00000000      3.16531228
+   2   52103.4972       # 191.93 nm            # Transition moment 3.44, angle 23.00 to y axis
+      -0.3907      0.9205      0.0000   1.000  # Electr. mom., scale fac.
+       0.0000      0.0000      0.0000          # Magnet. mom.
+       0.00000000      0.00000000      0.00000000     -3.44038864
+      -0.39073113      0.92050485      0.00000000      3.44038864
+&TRANSITION 2->... # URA-FUL3
+   0     00000.0000     #
+         0.0000         0.0000         0.0000  1.000  # electr. mom., scale fac..
+         0.0000         0.0000         0.0000         # magnet. mom.
+&PERMANENT MOMENTS # URA-FUL3
+   0     00000.0000     #
+         0.0000         0.0000         0.0000  1.000  # electr. mom., scale fac..
+   0     00000.0000     #
+         0.0000         0.0000         0.0000  1.000  # electr. mom., scale fac..
