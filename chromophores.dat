@@ -1,5 +1,4 @@
 # Name     Type   Trans   Phi      Psi
-NMA0IR	    NMA	    1      0.0      0.0     # example peptide	
 NMA4FIT2    NMA     2      0.0      0.0     # peptide bond
 CT01009A    CTR     4    180.0    180.0     # charge-transfer
 CTBE009A    CTR     4   -135.0    135.0     # charge-transfer
