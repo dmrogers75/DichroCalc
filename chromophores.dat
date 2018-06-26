@@ -1,5 +1,7 @@
 # Name     Type   Trans   Phi      Psi
 NMA4FIT2    NMA     2      0.0      0.0     # peptide bond
+NMAVIB00    NMA     6      0.0      0.0     # peptide bond (vibrational)
+NMA99WDY    NMA     2      0.0      0.0     # peptide bond
 CT01009A    CTR     4    180.0    180.0     # charge-transfer
 CTBE009A    CTR     4   -135.0    135.0     # charge-transfer
 CT-BE09A    CTR     4    135.0   -135.0     # charge-transfer
@@ -22,6 +24,9 @@ CT-1509A    CTR     4     60.0     60.0     # charge-transfer
 PHECASI3    PHE     4      0.0      0.0     # phenylalanine
 TYRCASY4    TYR     4      0.0      0.0     # tyrosine
 TRPCASH1    TRP     4      0.0      0.0     # tryptophan
+PHEVIB00    PHE     9      0.0      0.0     # phenylalanine (vibrational)
+TYRVIB00    TYR    11      0.0      0.0     # tyrosine (vibrational)
+TRPVIB00    TRP    18      0.0      0.0     # tryptophan (vibrational)
 ASNHIRST    ASN     4      0.0      0.0     # asparagine
 GLNHIRST    GLN     4      0.0      0.0     # glutamine
 ASP_CNVE    ASP     2      0.0      0.0     # aspartic acid
@@ -32,3 +37,4 @@ GUAWFUL3      G     2      0.0      0.0     # guanine (considering water)
 CYT-FUL3      C     2      0.0      0.0     # cytosine
 THY-FUL3      T     2      0.0      0.0     # thymine
 URA-FUL3      U     2      0.0      0.0     # uracil
+UREA04C2    URE     3      0.0      0.0     # dimethylurea

@@ -19,7 +19,7 @@
 #
 # Author:            Benjamin Bulheller
 #
-# Version:           $Revision: 4662 $, $Date: 2009-08-01 19:05:15 +0100 (Sat, 01 Aug 2009) $
+# Version:           $Revision: 4874 $, $Date: 2010-01-30 14:43:10 +0100 (Sat, 30 Jan 2010) $
 #
 # Date:              November 2005
 #
@@ -91,10 +91,10 @@ my $MaxAtoms     = 10000;
 # The sequence of the atoms in the arrays ([qw/. . ./]) needs to be exactly the sequence as
 # they are in the monopole file, otherwise the assignment gets screwed up!
 
-my $CHROMOPHORES = [qw/peptide urea CT PHE TYR TRP ASP GLU GLN ASN ASPLYS NAP TRT LNK A T G C U TERM /];  
+my $CHROMOPHORES = [qw/peptide URE CT PHE TYR TRP ASP GLU GLN ASN ASPLYS NAP TRT LNK A T G C U TERM/];
 my $ATOMS = {
-        peptide => [qw/C O N/],
-	urea    => [qw/C O N/],
+	peptide => [qw/C O N/],
+	URE     => [qw/N' O N/],
 	CT      => [qw/C O N C O N/],
 	PHE     => [qw/CG CD1 CE1 CZ CE2 CD2/],
 	TYR     => [qw/CZ CE1 CE2 CD1 CD2 CG OH/],
@@ -113,7 +113,7 @@ my $ATOMS = {
 	T       => [qw/N1 C2 O2 N3 C4 O4 C5 C6/],
 	C       => [qw/N1 C2 O2 N3 C4 N4 C5 C6/],
 	U       => [qw/N1 C2 O2 N3 C4 O4 C5 C6/],
-}; 
+};
 
 
 ####################################################################################################
@@ -149,8 +149,9 @@ $Parameters = {
 	dc       => "switch",      # to create the .inp file (C++)
 	mm       => "switch",      # to create the .stf and .fmt (Fortran)
 	
-        nma      => "switch",      # to assign NMA4FIT2 to the backbone chromophores
+	nma      => "switch",      # to assign NMA4FIT2 to the backbone chromophores
 	wdy      => "switch",      # to assign NMA99WDY to the backbone chromophores
+        nvb      => "switch",      # to assign NMAVIB00 to the backbone chromophores  Zhuo added.
 	urea     => "switch",      # to assign urea instead of peptide chromophores
 	
 	sc       => "switch",      # include aromatic side chain chromophores
@@ -229,6 +230,7 @@ $Help =
 	"-nma       use NMA4FIT2 for the backbone chromophores (default)\n" .
 	"-wdy       use NMA99WDY for the backbone chromophores\n" .
 	"-urea      use urea chromophores instead of peptide chromophores for the backbone\n" .
+        "-nvb      use peptide vibrational chromophores instead of peptide chromophores for the backbone\n" . #Zhuo added.
 	"-p SET     use the given parameter set for the backbone chromophores\n" .
 	"-ct        include charge-transfer transitions\n" .
 	"\n" .
@@ -397,10 +399,9 @@ sub CheckParameters {
 		$Options->{thy} = 1;
 		$Options->{ura} = 1;
 	}
-
 	
 	foreach my $Option ( qw/bbt ctt sct nbt/ ) {
-		if (defined $Options->{$Option} and ($Options->{$Option} < 1 or $Options->{$Option} > 8)) {
+		if (defined $Options->{$Option} and ($Options->{$Option} < 1 or $Options->{$Option} > 6)) { #ZhuoLi change option>4 to option>6
 			&AbortProgram ("ERROR: -$Option must be 1, 2, 3 or 4.\n$Help", 18);
 		}
 	}
@@ -436,12 +437,12 @@ sub ReadChromophores { # read the data from chromophores.dat
 		chomp @Content;
 		close DATFILE;
 	}
-	# if chromophores.dat is not given, it is OK as long as no CT or side chains are to be included;
+	# if chromophores.dat is not given, it is OK as long as no CT or side chains are to be included
 	elsif (not $ChromophoresDat and
 	       not $Options->{ct}  and not $Options->{sc}  and not $Options->{nb}  and
 	       not $Options->{phe} and not $Options->{tyr} and not $Options->{trp} and
 	       not $Options->{asp} and not $Options->{glu} and not $Options->{asn} and not $Options->{gln} and not $Options->{nap} and
-	       not $Options->{ade} and not $Options->{gua} and not $Options->{cyt} and not $Options->{tyr} and not $Options->{ura} ) {
+	       not $Options->{ade} and not $Options->{gua} and not $Options->{cyt} and not $Options->{tyr} and not $Options->{ura}) {
 		if ($Options->{p}) {
 			$Content[0] = "$Options->{p}  NMA 2    0.0    0.0";
 		}
@@ -454,6 +455,9 @@ sub ReadChromophores { # read the data from chromophores.dat
 		elsif ($Options->{wdy}) {
 			$Content[0] = "NMA99WDY  WDY 2    0.0    0.0";
 		}
+                elsif ($Options->{nvb}) { #Zhuo_Li added.
+                        $Content[0] = "NMAVIB00  NMA 6    0.0    0.0";
+                } 
 		else {
 			# otherwise take NMA4FIT2 by default
 			$Content[0] = "NMA4FIT2  NMA 2    0.0    0.0";
@@ -481,7 +485,7 @@ sub ReadChromophores { # read the data from chromophores.dat
 		# created manually and checked for every calculation.
 		# It is still possible to use another parameter set version via chromophores.dat,
 		# e.g. NMA4FIT3 or similar.
-		if ( $Line =~ m/ (NMA|WDY|URE) / and ($Options->{nma} or $Options->{wdy} or $Options->{urea} ) ) {
+		if ( $Line =~ m/ (NMA|WDY|URE) / and ($Options->{nma} or $Options->{wdy} or $Options->{urea} or $Options->{nvb}) ) { #Zhuo_Li added.
 			if ($Options->{p}) {
 				# if a specific local chromophore was requested via -p and the chromophores.dat
 				# line does not fit, replace it with the correct one
@@ -496,6 +500,10 @@ sub ReadChromophores { # read the data from chromophores.dat
 			elsif ($Options->{wdy}) {
 				if ($Line !~ m/WDY/)   { $Line = "NMA99WDY  WDY 2    0.0    0.0" }
 			}
+                        elsif ($Options->{nvb}) { # Zhuo_Li added.
+                                if ($Line !~ m/NMAVIB/)   { $Line = "NMAVIB00  NMA 6    0.0    0.0" }
+                        }
+
 		}
 		
 		@Fields = split /\s+/, $Line;
@@ -521,6 +529,7 @@ sub ReadChromophores { # read the data from chromophores.dat
 		if (not $Options->{nap} and $Fields[0] =~ m/^FCWEIGH/) { next }
 		if ( (not $Options->{lnk} and not $Options->{asp} and not $Options->{term}) and $Fields[0] =~ m/^ASP/) { next }
 		# if (not $Options->{trt} and $Fields[0] =~ m/^PHE/) { next }
+		
 		# ignore nucleic base chromophores if they were not requested
 		if (not $Options->{ade} and $Fields[0] =~ m/^ADE/) { next }
 		if (not $Options->{gua} and $Fields[0] =~ m/^GUA/) { next }
@@ -651,10 +660,10 @@ sub MakeInput { # process a given file
 		if (not $Options->{nobb}) { # if the backbone chromophores are included
 			if (not $Options->{urea}) {
 				if ($Options->{wdy}) { &AssignPeptideChromophores (\@ResidueIndex, "peptide", "WDY"); }
-				                else { &AssignPeptideChromophores (\@ResidueIndex, "peptide", "NMA"); }
+				                else { &AssignPeptideChromophores (\@ResidueIndex, "peptide", "NMA"); }  #Zhuo_Li !!!!!!
 			}
 			else { # if it is an oligourea
-				&AssignPeptideChromophores (\@ResidueIndex, "urea", "URE");
+				&AssignChromophores (\@ResidueIndex, "urea", ["URE"]);
 			}
 		}
 		
@@ -683,8 +692,7 @@ sub MakeInput { # process a given file
 		if ($Options->{nap}) {
 			&AssignChromophores (\@ResidueIndex, "NAP", ["NAP"]);
 		}
-	        
-
+		
 		if ($Options->{lnk}) {
 			$ATOMS->{LNK} = [qw/C1' O1' O2'/];
 			&AssignChromophores (\@ResidueIndex, "LNK", ["LNK"]);
@@ -820,7 +828,7 @@ sub ParsePDB { # read and parse the PDB content
 	my $FileName = shift;
 	my $Options = shift;
 	
-	$PDB = ParsePDB->new (FileName => $FileName, Verbose => 0, NoHETATM => 0, NoANISIG => 1); # create a new object
+	$PDB = ParsePDB->new (FileName => $FileName, Verbose => 0, NoHETATM => 1, NoANISIG => 1); # create a new object
 	
 	$PDB->Parse;
 	$PDB->RemoveInsertedResidues (Model => 0, Intensive => 1);
@@ -836,7 +844,7 @@ sub ParsePDB { # read and parse the PDB content
 	
 	# if the number of atoms is higher than allowed the maximum, try to remove unnecessary atoms
 	if ($Options->{NumberOfAtoms} > $MaxAtoms) {
-		&LogEntry ("WARNING: $Options->{NumberOfAtoms} have been found what exceeds the maximum number of $MaxAtoms\n" .
+		&LogEntry ("WARNING: $Options->{NumberOfAtoms} atoms have been found what exceeds the maximum number of $MaxAtoms\n" .
 		          "          supported for the calculation. Unnecessary atoms will be removed.\n");
 		
 		my $Command = "";
@@ -852,13 +860,13 @@ sub ParsePDB { # read and parse the PDB content
 		if ($Options->{trp})  { $Command = $Command . "-trp  " }
 		if ($Options->{cyc})  { $Command = $Command . "-cyc  " }
 		if ($Options->{term}) { $Command = $Command . "-term " }
-
-                $FileName =~ s/\.pdb//;
+		
+		$FileName =~ s/\.pdb//;
 		
 		if ($Options->{dc}) {
 			system "deletepdbatoms $FileName.pdb $Command -o $FileName.inp.pdb";
 			$PDB = ParsePDB->new (FileName => "$FileName.inp.pdb", Verbose => 0, NoHETATM => 1, NoANISIG => 1); # create a new object
-		} 
+		}
 		
 		if ($Options->{mm}) {
 			system "deletepdbatoms $FileName.pdb $Command -o $FileName.stf.pdb";
@@ -1048,7 +1056,7 @@ sub AssignPeptideChromophores { # assign backbone chromophores for peptides and 
 	if ($Options->{v}) { print "   Assigning ", lc $Type, " chromophores\n" }
 	
 	Residue: foreach $Residue ( @{$ResidueIndex} ) {
-		if ($Residue->{$Type}) {
+		if ($Residue->{$Type}) { # this was set in sub FindPeptideBonds
 			# if the chromophore was not used before, add to the list of used chromophores
 			# and save its index there
 			if (not defined $ChromTypes->{$Key}{Index}) {
@@ -1184,7 +1192,7 @@ sub AssignChargeTransferChromophores { # assign charge-transfer chromophores acc
 
 ####################################################################################################
 
-sub AssignChromophores { # assign sidechain and nucleic base chromophores (any chromophore on one single residue) 
+sub AssignChromophores { # assign sidechain and nucleic base chromophores (any chromophore on one single residue)
 	my $ResidueIndex = shift;
 	my $Type         = shift;
 	my $Chromophores = shift;
@@ -1217,7 +1225,7 @@ sub AssignChromophores { # assign sidechain and nucleic base chromophores (any c
 				
 				$ChromTypes->{$Key}{Index} = $#{$ChromUsed->{Names}};
 			}
-			
+
 			# check each residue in the ResidueIndex whether its label fits to the wanted chromophore
 			# and if so, determine the atom numbers and add them to the $Assigned array
 			&GetChromophoreAtoms ($ResidueIndex, $Key);
@@ -1263,8 +1271,8 @@ sub GetChromophoreAtoms { # returns the atom number of the needed types in a giv
 		Residue: foreach $Residue ( @{$ResidueIndex} ) {
 			$ResidueLabel = $Residue->{ResidueLabel};
 			
-			# check if the side chain of this residue is to be ignored
-			if ($Options->{scignore}) {
+			# check if the side chain of this residue is to be ignored and that it's not urea (which is backbone)
+			if ($Options->{scignore} and $Key ne "URE") {
 				foreach $Number ( @{$Options->{scignore}} ) {
 					if ($Residue->{ResidueNumber} == $Number) { next Residue }
 				}
