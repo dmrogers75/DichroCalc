@@ -39,7 +39,7 @@ my $DefaultMin = 150;                # minimum wavelength
 my $DefaultMax = 350;                # maximum wavelength
 my $DefaultCurveType = 3;            # 3 = Gaussian curve, 2 = approx. Lorentzian, 1 = Lorentzian
 my $DefaultInterval  = 0.1;          # interval of calculated wavelengths
-my $DefaultBandwidth = 12.5 ;         # currently only one halfwidth is supported
+my $DefaultBandwidth = 12.5;         # currently only one halfwidth is supported
 
 my $DefaultUseAshape = 0;            # use ashape instead of calculating via sub Bandshape
 
@@ -208,7 +208,7 @@ foreach $File (@AllFiles) {
 	
 	# for CD spectra
 	if ($Extension eq "cdl") {
-		$OutFile = $BaseName . "vib.cd";
+		$OutFile = $BaseName . ".cd";
 		
 		# if it is a CD spectrum, the .cdl file is directly convoluted
 		if ($Options->{ashape}) {
@@ -425,7 +425,7 @@ foreach $File (@AllFiles) {
 	
 	if ($Parameters->{Plot}) {
 		if ($Extension eq "cdl") {
-			system "plotspectrum $BaseName.vib.cd -x $Parameters->{Min} $Parameters->{Max}";
+			system "plotspectrum $BaseName.cd -x $Parameters->{Min} $Parameters->{Max}";
 		}
 		
 		if ($Extension eq "abl") {
@@ -465,7 +465,7 @@ sub ReadPDB { # parses the PDB file to determine the number of residues
 	if ($Options->{silent}) { $Verbose = 0 }
 	                   else { $Verbose = 1 }
 
-	$PDB = ParsePDB->new (FileName => "$BaseName.pdb", Verbose => $Verbose, NoHETATM => 1, NoANISIG => 1); 
+	$PDB = ParsePDB->new (FileName => "$BaseName.pdb", Verbose => $Verbose, NoHETATM => 1, NoANISIG => 1);
 	
 	$Chain = undef;
 	

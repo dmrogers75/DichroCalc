@@ -9,7 +9,7 @@
 #
 # Author:     Benjamin Bulheller
 #
-# Version:    $Revision: 4636 $, $Date: 2009-07-16 00:31:32 +0100 (Thu, 16 Jul 2009) $
+# Version:    $Revision: 4791 $, $Date: 2009-10-06 20:30:13 +0100 (Tue, 06 Oct 2009) $
 #
 # Date:       March 2007
 #
@@ -42,6 +42,7 @@ my $ATOMS = {       # atom labels, taken from dcinput
 	ASN     => "CG|OD1|ND2",
 	TERM    => "C|OT1|OT2",
 	ASPLYS  => "CG|OD1|NZ",
+	NAP     => "O1|N1|O4|C3|C10|C4|C9|O2|N2|O3",
 	A       => "N1|C2|N3|C4|C5|C6|N6|N7|C8|N9",
 	G       => "N1|C2|N2|N3|C4|C5|C6|O6|N7|C8|N9",
 	T       => "N1|C2|O2|N3|C4|O4|C5|C6",
@@ -71,6 +72,7 @@ my $Parameters = {     # create an anonymous hash
 	gln      => "switch",      # include glutamine side chain peptide group
 	
 	nb       => "switch",      # include DNA base chromophores
+	nap      => "switch",      # include napththalenediimide
 	ct       => "switch",      # include charge-transfer chromophores
 	cyc      => "switch",      # include cyclic peptide bonds between non-successive residues
 	term     => "switch",      # include the terminal carboxyl group
@@ -93,6 +95,7 @@ my $Help = "\n" .
 	"        -gln      include glutamine side chain peptide group\n" .
 	"\n" .
 	"      -nb       include parameters for nucleic bases\n" .
+	"      -nap      include naphthalenediimide groups\n" .
 	"      -cyc      look for peptide bonds between non-successive residues\n" .
 	"                (currently LYS-ASP, CG OD1 NZ supported)\n" .
 	"      -term     include the terminal carboxyl group\n" .
@@ -153,7 +156,7 @@ sub DeletePDBAtoms {
 			# reset the atom types
 			$AtomTypes = $ATOMS->{peptide};
 			
-			foreach $Group ( qw/phe tyr trp asn asp gln glu/) {
+			foreach $Group ( qw/phe tyr trp asn asp gln glu nap/) {
 				$Residue = uc $Group;
 				
 				if ($Options->{$Group} and $Atom->{ResidueLabel} eq $Residue) {
