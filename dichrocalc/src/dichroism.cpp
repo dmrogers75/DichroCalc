@@ -278,7 +278,7 @@ int  Dichro::LD_Calculation ( void )
 			// 
 			
 			// initialize the polarization vector for each transition of this group
-			vector< vector<double> > Dxyz (iCurGroup->MaxNumberOfTransitions*3, vector<double>(3, 0.0)); // DMR 20180601 NumberOfTransitions to MaxNumberOfTransitions
+			vector< vector<double> > Dxyz (MaxNumberOfTransitions*3, vector<double>(3, 0.0)); // DMR 20180601 iCurGroup->NumberOfTransitions to MaxNumberOfTransitions
 			
 			jCount = 0;
 			
