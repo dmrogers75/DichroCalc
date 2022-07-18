@@ -1,4 +1,4 @@
-Description of "diabatisation" directory contents.
+Description of 'diabatisation' directory contents.
 
 
 coupling.f90 - Fortran source code to perform diabatisation.
