@@ -1,0 +1,17 @@
+# dimension of the TDM
+3
+# Number of transitions
+4
+# mu_iso (monomers)    
+-0.000308   -2.434495   -0.000002   -1.977537       
+-0.013936   -1.590805    0.015130    2.129945        
+-0.225570    0.101608    0.225493   -0.142936
+# mu_a (Transition dipole moment of the adiabatic chromophores)
+-0.0043   3.6232  -0.0068   1.1733
+-0.0183   1.4716   0.0143  -3.5820
+-0.1611  -0.0909   0.1692   0.2392
+# h_a - the hamiltonian of the adiabatic state
+45087. 0 0 0
+0 54035. 0 0
+0 0 46170. 0
+0 0 0 52714.
