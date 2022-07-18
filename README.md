@@ -32,7 +32,10 @@ params/                a directory containing the parameter sets. The directory 
 perllib/               a directory containing libraries required for the perl scripts (in ./scripts/).
 
 
-REFERENCES	       a file listing the references you should cite if you present any data in a publication.
+REFERENCES	           a file listing the references you should cite if you present any data in a publication.
 
 
 scripts/               a directory containing various perl scripts.
+
+
+diabatisation/         a directory containing code for diabatisation of the diamide chromophore.
