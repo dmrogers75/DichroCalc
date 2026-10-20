@@ -21,6 +21,8 @@ CTAL009A    CTR     4    -48.0    -57.0     # charge-transfer
 CT-AL09A    CTR     4     48.0     57.0     # charge-transfer
 CT15009A    CTR     4    -60.0    -60.0     # charge-transfer
 CT-1509A    CTR     4     60.0     60.0     # charge-transfer
+CT11009A    CTR     4   -120.0      0.0     # charge-transfer
+CT12009A    CTR     4    -60.0      0.0     # charge-transfer
 PHECASI3    PHE     4      0.0      0.0     # phenylalanine
 TYRCASY4    TYR     4      0.0      0.0     # tyrosine
 TRPCASH1    TRP     4      0.0      0.0     # tryptophan
